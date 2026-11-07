@@ -35,7 +35,8 @@ def _text_keys(root: bytes, name: str):
 
 def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
                    password=None, cover_text=None, voice=None, lyrics_text=None, attach=None):
-    """Buat lagu. Semua pesan rahasia opsional; tanpa satu pun, hasilnya lagu biasa."""
+    """Buat lagu. Semua pesan rahasia opsional; tanpa satu pun, hasilnya lagu biasa.
+    db_key boleh None untuk lagu publik (upload dari pemutar biasa)."""
     wants = any([cover_text, voice, lyrics_text, attach])
     if wants and not password:
         raise ValueError("Isi kunci pesan untuk menyimpan pesan rahasia.")
@@ -71,7 +72,8 @@ def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
 
     blockchain.add_block({"release": rid, "owner": owner,
                           "files": {n.split(".")[0]: keys.sha256_hex(b) for n, b in files.items()}})
-    db.put_track(db_key, owner, rid, meta)
+    if db_key is not None:  # lagu publik (tanpa dongle) tidak masuk katalog terenkripsi
+        db.put_track(db_key, owner, rid, meta)
     return rid
 
 

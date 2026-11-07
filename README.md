@@ -36,6 +36,8 @@ Lagu MP3 harus diubah ke WAV 16-bit: `ffmpeg -i lagu.mp3 -ar 44100 -ac 2 -sample
 ## Cara masuk mode kripto
 
 1. Buka aplikasi: tampil pemutar musik biasa (daftar lagu, cari, putar), tanpa dongle.
+   Siapa pun bisa menambah lagu biasa lewat **➕ Tambah lagu** (WAV + cover + lirik). Lagu publik ini ikut tercatat
+   di blockchain dengan format yang sama seperti lagu berpesan, jadi lagu berpesan tidak menonjol.
 2. Ketik **frasa rahasia** di kotak "Cari lagu" lalu tekan **Enter**. Bawaan: `sonic vault`.
    Ganti frasa: `python make_secret.py`, lalu tempel hash-nya ke `SECRET_HASH` di `app.py`
    (atau set env `SONICVAULT_SECRET_HASH`).
@@ -44,7 +46,7 @@ Lagu MP3 harus diubah ke WAV 16-bit: `ffmpeg -i lagu.mp3 -ar 44100 -ac 2 -sample
 
 ## Alur demo
 
-1. Tunjukkan pemutar biasa dan cari lagu. Ketik frasa rahasia tanpa dongle → hanya muncul "Colok dongle".
+1. Tunjukkan pemutar biasa: tambah satu lagu lewat **Tambah lagu**, cari, dan putar. Ketik frasa rahasia tanpa dongle → hanya muncul "Colok dongle".
 2. Colok dongle → Daftar (3 foto wajah) → Masuk (password + wajah).
 3. **Buat**: pilih `lagu_demo.wav` dan `cover_demo.png`, isi lirik. Isi kunci pesan, lalu cover = lokasi, rekam suara = kegiatan, lirik = waktu.
 4. Salin kode `SV-xxxxxxxx` (atau unduh zip) dan bagikan kuncinya terpisah.

@@ -3,8 +3,10 @@ Masuk mode kripto: ketik frasa rahasia di kotak cari + Enter, lalu colok dongle.
 Jalankan: streamlit run app.py"""
 import hashlib
 import hmac
+import io
 import os
 import time
+import wave
 
 import streamlit as st
 
@@ -21,7 +23,8 @@ db.init()
 blockchain.ensure_genesis()
 
 ss = st.session_state
-for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None, "reg_faces": []}.items():
+for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None, "reg_faces": [],
+               "pub_n": 0, "pub_msg": None}.items():
     ss.setdefault(_k, _v)
 
 
@@ -61,6 +64,35 @@ def player_mode():
         st.subheader(pick)
         st.audio(pub["audio"], format="audio/wav")
         st.text(pub["lyrics"])
+
+
+def add_song_ui():
+    """Tambah lagu biasa (tanpa dongle). Pesan rahasia hanya bisa dibuat di mode kripto."""
+    if ss.pub_msg:
+        st.success(ss.pub_msg)
+        ss.pub_msg = None
+    n = ss.pub_n  # naik tiap sukses supaya form kosong kembali
+    with st.expander("➕ Tambah lagu"):
+        c1, c2 = st.columns(2)
+        title = c1.text_input("Judul", key=f"pb_t{n}")
+        artist = c2.text_input("Artis", key=f"pb_a{n}")
+        wav = st.file_uploader("File lagu (WAV)", type=["wav"], key=f"pb_w{n}")
+        cov = st.file_uploader("Cover album (PNG/JPG)", type=["png", "jpg", "jpeg"], key=f"pb_c{n}")
+        lyr = st.text_area("Lirik", height=120, key=f"pb_l{n}")
+        if st.button("Tambahkan", key=f"pb_b{n}", type="primary"):
+            if not (title.strip() and artist.strip() and wav and cov):
+                st.error("Judul, artis, file lagu, dan cover wajib diisi.")
+                return
+            try:
+                wave.open(io.BytesIO(wav.getvalue())).close()  # pastikan WAV valid
+                release.create_release(None, "publik", title.strip(), artist.strip(),
+                                       wav.getvalue(), cov.getvalue(), lyr)
+            except Exception as e:
+                st.error(f"Gagal menambahkan lagu: {e}")
+                return
+            ss.pub_n += 1
+            ss.pub_msg = f"Lagu \"{title.strip()}\" ditambahkan."
+            st.rerun()
 
 
 # ====================== Mode kripto (wajib dongle) ======================
@@ -243,4 +275,8 @@ def chain_ui():
 
 # ====================== Halaman utama ======================
 st.title(APP_TITLE)
-crypto_mode() if ss.crypto else player_mode()
+if ss.crypto:
+    crypto_mode()
+else:
+    player_mode()
+    add_song_ui()
