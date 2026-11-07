@@ -3,6 +3,7 @@ Masuk mode kripto: ketik frasa rahasia di kotak cari + Enter, lalu colok dongle.
 Jalankan: streamlit run app.py"""
 import hashlib
 import hmac
+import html
 import io
 import os
 import time
@@ -18,14 +19,73 @@ APP_TITLE = "🎵 Sonic Player"
 # Hash frasa rahasia (bawaan: "sonic vault"). Ganti dengan: python make_secret.py
 SECRET_HASH = os.environ.get("SONICVAULT_SECRET_HASH", "7be2da100494715da8af7b461c7aacbc7a184a093cfd3a3c1f02c23eaaceba1f")
 
-st.set_page_config(page_title="Sonic Player", page_icon="🎵", layout="wide")
+st.set_page_config(page_title="Sonic Player", page_icon="🎵", layout="wide", initial_sidebar_state="expanded")
 db.init()
 blockchain.ensure_genesis()
 
 ss = st.session_state
 for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None, "reg_faces": [],
-               "pub_n": 0, "pub_msg": None}.items():
+               "pub_n": 0, "pub_msg": None, "now": None}.items():
     ss.setdefault(_k, _v)
+
+
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;600;800&display=swap');
+html, body, .stApp, button, input, textarea { font-family: 'Figtree', system-ui, sans-serif !important; }
+footer, [data-testid="stToolbar"], [data-testid="stDecoration"] { display: none !important; }
+header[data-testid="stHeader"] { background: transparent; }
+.block-container { padding-top: 2rem; padding-bottom: 7.5rem; max-width: 1400px; }
+[data-testid="stSidebar"] { background: #000; border-right: none; }
+
+.sp-brand { font-size: 1.35rem; font-weight: 800; letter-spacing: -.02em; margin: 4px 0 18px; }
+.sp-h1 { font-size: 2rem; font-weight: 800; letter-spacing: -.02em; margin: 22px 0 4px; }
+.sp-h2 { font-size: 1.4rem; font-weight: 800; letter-spacing: -.01em; margin: 30px 0 12px; }
+.sp-kicker { font-size: .8rem; font-weight: 600; }
+.sp-hero-title { font-size: clamp(2rem, 5vw, 4.5rem); font-weight: 800; line-height: 1.05; letter-spacing: -.03em; margin: 6px 0; }
+.sp-hero-artist { font-size: 1rem; font-weight: 600; color: #e5e5e5; }
+.sp-title { font-weight: 700; font-size: 1rem; margin-top: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-artist { color: #b3b3b3; font-size: .875rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 6px; }
+.sp-lyrics { font-size: 1.3rem; font-weight: 800; line-height: 1.7; padding: 28px 32px; border-radius: 12px; margin-top: 16px; }
+
+.st-key-search [data-baseweb="input"], .st-key-search [data-baseweb="base-input"] {
+  background: #242424 !important; border-radius: 500px !important; border: 2px solid transparent !important; }
+.st-key-search [data-baseweb="input"]:focus-within { border-color: #fff !important; }
+.st-key-search input { padding: 12px 18px !important; }
+
+[class*="st-key-card_"] { background: #181818; border-radius: 8px; padding: 14px; transition: background .25s; }
+[class*="st-key-card_"]:hover { background: #282828; }
+[class*="st-key-card_"] img { border-radius: 6px; aspect-ratio: 1 / 1; object-fit: cover; width: 100%; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+[class*="st-key-card_"] button { width: 100%; }
+
+[data-testid="stBaseButton-primary"], button[kind="primary"] {
+  background: #1db954 !important; color: #000 !important; font-weight: 700 !important; border: none !important; border-radius: 500px !important; }
+[data-testid="stBaseButton-primary"]:hover, button[kind="primary"]:hover { background: #1ed760 !important; transform: scale(1.03); }
+
+.st-key-hero { border-radius: 10px; padding: 24px; margin-top: 8px; }
+.st-key-hero img { border-radius: 6px; box-shadow: 0 8px 32px rgba(0,0,0,.55); }
+
+.st-key-np_bar { position: fixed; bottom: 0; left: 0; right: 0; z-index: 1000; background: #181818;
+  border-top: 1px solid #282828; padding: 10px 24px; }
+.stApp:has([data-testid="stSidebar"][aria-expanded="true"]) .st-key-np_bar { left: 21rem; }
+.st-key-np_bar img { border-radius: 4px; }
+.st-key-np_bar audio { width: 100%; }
+</style>
+"""
+
+
+def esc(text: str) -> str:
+    return html.escape(str(text), quote=True).replace("\r", "").replace("\n", "<br>")
+
+
+@st.cache_data(show_spinner=False)
+def thumb(rid: str, size: int) -> bytes:
+    return release.cover_thumb(rid, size)
+
+
+@st.cache_data(show_spinner=False)
+def accent(rid: str):
+    return release.cover_color(rid)
 
 
 def is_secret(text: str) -> bool:
@@ -48,22 +108,64 @@ def lock():
 
 
 # ====================== Mode biasa: pemutar musik (tanpa dongle) ======================
+def greeting() -> str:
+    h = time.localtime().tm_hour
+    return "Selamat pagi" if h < 11 else "Selamat siang" if h < 15 else "Selamat sore" if h < 18 else "Selamat malam"
+
+
+def hero(t: dict):
+    r, g, b = accent(t["id"])
+    st.markdown(f"<style>.st-key-hero{{background:linear-gradient(180deg,rgba({r},{g},{b},.8) 0%,#121212 100%);}}</style>",
+                unsafe_allow_html=True)
+    with st.container(key="hero"):
+        c1, c2 = st.columns([1, 3], vertical_alignment="bottom")
+        c1.image(thumb(t["id"], 400))
+        c2.markdown(f'<div class="sp-kicker">Sedang diputar</div><div class="sp-hero-title">{esc(t["title"])}</div>'
+                    f'<div class="sp-hero-artist">{esc(t["artist"])}</div>', unsafe_allow_html=True)
+    lyrics = release.read_lyrics(t["id"]).strip()
+    if lyrics:
+        st.markdown(f'<div class="sp-lyrics" style="background:rgb({r},{g},{b})">{esc(lyrics)}</div>',
+                    unsafe_allow_html=True)
+
+
+def now_bar(t: dict):
+    with st.container(key="np_bar"):
+        c1, c2, c3 = st.columns([0.7, 2.6, 5], vertical_alignment="center")
+        c1.image(thumb(t["id"], 120), width=56)
+        c2.markdown(f'<div class="sp-title" style="margin-top:0">{esc(t["title"])}</div>'
+                    f'<div class="sp-artist" style="margin-bottom:0">{esc(t["artist"])}</div>', unsafe_allow_html=True)
+        c3.audio(release.read_audio(t["id"]), format="audio/wav", autoplay=True)
+
+
 def player_mode():
-    st.text_input("🔍 Cari lagu", key="search", on_change=on_search, placeholder="Cari judul atau artis…")
+    st.text_input("Cari", key="search", on_change=on_search, placeholder="Mau dengerin apa?",
+                  label_visibility="collapsed")
     q = ss.search.strip().lower()
     tracks = [t for t in release.list_public() if q in f'{t["title"]} {t["artist"]}'.lower()]
+    all_tracks = {t["id"]: t for t in release.list_public()}
+    now = all_tracks.get(ss.now)
+
+    if now:
+        hero(now)
+    else:
+        st.markdown(f'<div class="sp-h1">{greeting()}</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="sp-h2">Lagu kamu</div>', unsafe_allow_html=True)
     if not tracks:
-        st.info("Lagu tidak ditemukan." if q else "Belum ada lagu di perpustakaan.")
-        return
-    labels = {f'{t["title"]} — {t["artist"]} ({t["id"][:4]})': t["id"] for t in tracks}
-    pick = st.selectbox("Pilih lagu", list(labels))
-    pub = release.read_public(labels[pick])
-    c1, c2 = st.columns([1, 2])
-    c1.image(pub["cover"], width=320)
-    with c2:
-        st.subheader(pick)
-        st.audio(pub["audio"], format="audio/wav")
-        st.text(pub["lyrics"])
+        st.info("Lagu tidak ditemukan." if q else "Belum ada lagu. Tambahkan lewat menu di samping.")
+    per_row = 5
+    for i in range(0, len(tracks), per_row):
+        for col, t in zip(st.columns(per_row), tracks[i:i + per_row]):
+            with col, st.container(key=f"card_{t['id']}"):
+                st.image(thumb(t["id"], 300))
+                st.markdown(f'<div class="sp-title">{esc(t["title"])}</div><div class="sp-artist">{esc(t["artist"])}</div>',
+                            unsafe_allow_html=True)
+                playing = ss.now == t["id"]
+                if st.button("♪ Diputar" if playing else "▶ Putar", key=f"play_{t['id']}", type="primary"):
+                    ss.now = t["id"]
+                    st.rerun()
+    if now:
+        now_bar(now)
 
 
 def add_song_ui():
@@ -73,9 +175,8 @@ def add_song_ui():
         ss.pub_msg = None
     n = ss.pub_n  # naik tiap sukses supaya form kosong kembali
     with st.expander("➕ Tambah lagu"):
-        c1, c2 = st.columns(2)
-        title = c1.text_input("Judul", key=f"pb_t{n}")
-        artist = c2.text_input("Artis", key=f"pb_a{n}")
+        title = st.text_input("Judul", key=f"pb_t{n}")
+        artist = st.text_input("Artis", key=f"pb_a{n}")
         wav = st.file_uploader("File lagu (WAV)", type=["wav"], key=f"pb_w{n}")
         cov = st.file_uploader("Cover album (PNG/JPG)", type=["png", "jpg", "jpeg"], key=f"pb_c{n}")
         lyr = st.text_area("Lirik", height=120, key=f"pb_l{n}")
@@ -274,9 +375,12 @@ def chain_ui():
 
 
 # ====================== Halaman utama ======================
-st.title(APP_TITLE)
+st.markdown(CSS, unsafe_allow_html=True)
+with st.sidebar:
+    st.markdown('<div class="sp-brand">🎵 Sonic Player</div>', unsafe_allow_html=True)
+    if not ss.crypto:
+        add_song_ui()
 if ss.crypto:
     crypto_mode()
 else:
     player_mode()
-    add_song_ui()

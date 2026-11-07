@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
+from PIL import Image, ImageOps
 
 from . import blockchain, db, keys
 from .crypto_file import decrypt_bytes, encrypt_bytes
@@ -89,6 +90,31 @@ def list_public() -> list:
         except (OSError, ValueError, KeyError):
             continue
     return out
+
+
+def read_audio(rid: str) -> bytes:
+    return (_dir(rid) / "audio.wav").read_bytes()
+
+
+def read_lyrics(rid: str) -> str:
+    return (_dir(rid) / "lyrics.txt").read_bytes().decode("utf-8")
+
+
+def cover_thumb(rid: str, size: int = 300) -> bytes:
+    """Thumbnail persegi (JPEG) untuk kartu lagu."""
+    im = Image.open(_dir(rid) / "cover.png").convert("RGB")
+    buf = io.BytesIO()
+    ImageOps.fit(im, (size, size)).save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
+def cover_color(rid: str):
+    """Warna rata-rata cover (dibatasi agar teks putih tetap terbaca), untuk latar gradasi."""
+    im = Image.open(_dir(rid) / "cover.png").convert("RGB").resize((1, 1), Image.LANCZOS)
+    r, g, b = im.getpixel((0, 0))
+    m = max(r, g, b, 1)
+    k = 150 / m if m > 150 else 1
+    return int(r * k), int(g * k), int(b * k)
 
 
 def read_public(rid: str) -> dict:
