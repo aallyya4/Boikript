@@ -1,0 +1,97 @@
+"""SQLite dengan data penting terenkripsi (AES-256-GCM, kunci turunan dongle)."""
+import json
+import os
+import sqlite3
+import time
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+DB_PATH = os.environ.get("SONICVAULT_DB", "sonicvault.db")
+
+
+def enc_field(key: bytes, data: bytes, aad: bytes = b"") -> bytes:
+    nonce = os.urandom(12)
+    return nonce + AESGCM(key).encrypt(nonce, data, aad)
+
+
+def dec_field(key: bytes, blob: bytes, aad: bytes = b"") -> bytes:
+    return AESGCM(key).decrypt(blob[:12], blob[12:], aad)
+
+
+def _q(sql: str, args=()):
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    try:
+        with con:
+            return [dict(r) for r in con.execute(sql, args).fetchall()]
+    finally:
+        con.close()
+
+
+def init():
+    con = sqlite3.connect(DB_PATH)
+    with con:
+        con.executescript("""
+        CREATE TABLE IF NOT EXISTS users(
+            username TEXT PRIMARY KEY, pw_hash BLOB NOT NULL, face BLOB, created REAL);
+        CREATE TABLE IF NOT EXISTS tracks(
+            id TEXT PRIMARY KEY, owner TEXT, meta BLOB NOT NULL, created REAL);
+        CREATE TABLE IF NOT EXISTS inbox(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT, rid TEXT, body BLOB NOT NULL, created REAL);
+        CREATE TABLE IF NOT EXISTS chain(
+            idx INTEGER PRIMARY KEY, ts REAL, data TEXT, prev_hash TEXT, hash TEXT);
+        """)
+    con.close()
+
+
+# ---- users ----
+def add_user(username: str, pw_hash: bytes, face_blob):
+    _q("INSERT INTO users VALUES (?,?,?,?)", (username, pw_hash, face_blob, time.time()))
+
+
+def get_user(username: str):
+    rows = _q("SELECT * FROM users WHERE username=?", (username,))
+    return rows[0] if rows else None
+
+
+# ---- tracks (metadata terenkripsi) ----
+def put_track(key: bytes, owner: str, rid: str, meta: dict):
+    blob = enc_field(key, json.dumps(meta).encode(), rid.encode())
+    _q("INSERT OR REPLACE INTO tracks VALUES (?,?,?,?)", (rid, owner, blob, time.time()))
+
+
+def list_tracks(key: bytes):
+    out = []
+    for r in _q("SELECT * FROM tracks ORDER BY created DESC"):
+        try:
+            out.append(json.loads(dec_field(key, r["meta"], r["id"].encode())))
+        except InvalidTag:
+            continue
+    return out
+
+
+# ---- arsip pesan penting (terenkripsi) ----
+def put_message(key: bytes, owner: str, rid: str, payload: dict):
+    blob = enc_field(key, json.dumps(payload).encode(), owner.encode())
+    _q("INSERT INTO inbox(owner, rid, body, created) VALUES (?,?,?,?)", (owner, rid, blob, time.time()))
+
+
+def list_messages(key: bytes, owner: str):
+    out = []
+    for r in _q("SELECT * FROM inbox WHERE owner=? ORDER BY created DESC", (owner,)):
+        try:
+            out.append({"rid": r["rid"], "created": r["created"],
+                        "payload": json.loads(dec_field(key, r["body"], owner.encode()))})
+        except InvalidTag:
+            continue
+    return out
+
+
+# ---- blockchain ----
+def chain_rows():
+    return _q("SELECT * FROM chain ORDER BY idx")
+
+
+def chain_insert(idx: int, ts: float, data: str, prev_hash: str, h: str):
+    _q("INSERT INTO chain VALUES (?,?,?,?,?)", (idx, ts, data, prev_hash, h))
