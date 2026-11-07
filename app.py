@@ -1,4 +1,9 @@
-"""SonicVault: pemutar musik yang menyimpan platform pesan rahasia. Jalankan: streamlit run app.py"""
+"""Sonic Player: pemutar musik biasa dengan mode kripto tersembunyi.
+Masuk mode kripto: ketik frasa rahasia di kotak cari + Enter, lalu colok dongle.
+Jalankan: streamlit run app.py"""
+import hashlib
+import hmac
+import os
 import time
 
 import streamlit as st
@@ -7,36 +12,45 @@ from core import auth, blockchain, db, keys, release
 from core.stego_audio import audio_capacity
 from core.stego_image import image_capacity
 
-st.set_page_config(page_title="SonicVault", page_icon="🎵", layout="wide")
+APP_TITLE = "🎵 Sonic Player"
+# Hash frasa rahasia (bawaan: "sonic vault"). Ganti dengan: python make_secret.py
+SECRET_HASH = os.environ.get("SONICVAULT_SECRET_HASH", "7be2da100494715da8af7b461c7aacbc7a184a093cfd3a3c1f02c23eaaceba1f")
 
-# ====================== Gerbang 1: dongle ======================
-dongle = auth.find_dongle()
-if dongle is None:
-    st.title("🎵 SonicVault")
-    st.error("🔌 Dongle tidak ditemukan. Colok flashdisk dongle, lalu coba lagi.")
-    st.button("Coba lagi")
-    st.stop()
-
-DB_KEY = keys.slot_key(dongle, "db")  # kunci database diturunkan dari dongle
+st.set_page_config(page_title="Sonic Player", page_icon="🎵", layout="wide")
 db.init()
 blockchain.ensure_genesis()
 
 ss = st.session_state
-ss.setdefault("user", None)
-ss.setdefault("opened", None)
-ss.setdefault("last", None)
-ss.setdefault("reg_faces", [])
+for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None, "reg_faces": []}.items():
+    ss.setdefault(_k, _v)
+
+
+def is_secret(text: str) -> bool:
+    norm = " ".join(text.lower().split())
+    return hmac.compare_digest(hashlib.sha256(norm.encode()).hexdigest(), SECRET_HASH)
+
+
+def on_search():
+    if is_secret(ss.search):
+        ss.crypto = True
+        ss.search = ""  # kotak cari kembali kosong, tidak meninggalkan jejak
 
 
 def fmt_time(ts: float) -> str:
     return time.strftime("%d %b %Y %H:%M", time.localtime(ts))
 
 
-# ====================== Pemutar (tampilan luar) ======================
-def player_ui():
-    tracks = db.list_tracks(DB_KEY)
+def lock():
+    ss.user = ss.opened = ss.last = None
+
+
+# ====================== Mode biasa: pemutar musik (tanpa dongle) ======================
+def player_mode():
+    st.text_input("🔍 Cari lagu", key="search", on_change=on_search, placeholder="Cari judul atau artis…")
+    q = ss.search.strip().lower()
+    tracks = [t for t in release.list_public() if q in f'{t["title"]} {t["artist"]}'.lower()]
     if not tracks:
-        st.info("Belum ada lagu di perpustakaan.")
+        st.info("Lagu tidak ditemukan." if q else "Belum ada lagu di perpustakaan.")
         return
     labels = {f'{t["title"]} — {t["artist"]} ({t["id"][:4]})': t["id"] for t in tracks}
     pick = st.selectbox("Pilih lagu", list(labels))
@@ -49,15 +63,32 @@ def player_ui():
         st.text(pub["lyrics"])
 
 
-# ====================== Login / daftar ======================
-def login_ui():
+# ====================== Mode kripto (wajib dongle) ======================
+def crypto_mode():
+    c1, c2 = st.columns([5, 1])
+    if c2.button("⏻ Tutup"):
+        ss.crypto = False
+        lock()
+        st.rerun()
+    dongle = auth.find_dongle()  # dicek ulang tiap interaksi: dongle dicabut = terkunci
+    if dongle is None:
+        lock()
+        st.warning("🔌 Colok dongle untuk melanjutkan.")
+        st.button("Coba lagi")
+        return
+    dbk = keys.slot_key(dongle, "db")  # kunci database diturunkan dari dongle
+    c1.caption("🔓 Dongle terdeteksi")
+    secret_ui(dbk) if ss.user else login_ui(dbk)
+
+
+def login_ui(dbk):
     mode = st.radio("Mode", ["Masuk", "Daftar"], horizontal=True, label_visibility="collapsed")
     if mode == "Masuk":
         u = st.text_input("Username", key="li_u")
         p = st.text_input("Password", type="password", key="li_p")
         shot = st.camera_input("Verifikasi wajah", key="li_cam")
         if st.button("Masuk", type="primary"):
-            ok, msg = auth.login(DB_KEY, u.strip(), p, shot.getvalue() if shot else None)
+            ok, msg = auth.login(dbk, u.strip(), p, shot.getvalue() if shot else None)
             if ok:
                 ss.user = u.strip()
                 st.rerun()
@@ -70,7 +101,7 @@ def login_ui():
             ss.reg_faces.append(shot.getvalue())
         st.caption(f"Foto tersimpan: {len(ss.reg_faces)}/3")
         if st.button("Daftar", type="primary"):
-            ok, msg = auth.register(DB_KEY, u.strip(), p, ss.reg_faces)
+            ok, msg = auth.register(dbk, u.strip(), p, ss.reg_faces)
             if ok:
                 ss.reg_faces = []
                 st.success(msg)
@@ -78,8 +109,20 @@ def login_ui():
                 st.error(msg)
 
 
-# ====================== Buat lagu / pesan ======================
-def make_ui():
+def secret_ui(dbk):
+    st.success(f"Mode kripto aktif: {ss.user}")
+    t_make, t_open, t_arch, t_chain = st.tabs(["🎼 Buat", "🔓 Buka", "🗄️ Arsip", "⛓️ Registri"])
+    with t_make:
+        make_ui(dbk)
+    with t_open:
+        open_ui(dbk)
+    with t_arch:
+        archive_ui(dbk)
+    with t_chain:
+        chain_ui()
+
+
+def make_ui(dbk):
     st.caption("Kosongkan semua pesan rahasia untuk menambah lagu biasa.")
     c1, c2 = st.columns(2)
     title = c1.text_input("Judul lagu", key="mk_t")
@@ -110,7 +153,7 @@ def make_ui():
             voice = rec if rec is not None else up
             try:
                 ss.last = release.create_release(
-                    DB_KEY, ss.user, title, artist, wav.getvalue(), cov.getvalue(), lyr,
+                    dbk, ss.user, title, artist, wav.getvalue(), cov.getvalue(), lyr,
                     password=key or None, cover_text=s_cover or None,
                     voice=voice.getvalue() if voice is not None else None,
                     lyrics_text=s_lyr or None,
@@ -124,14 +167,13 @@ def make_ui():
         st.download_button("⬇️ Unduh paket (.zip)", release.export_zip(ss.last), file_name=f"SV-{ss.last}.zip")
 
 
-# ====================== Buka pesan ======================
-def open_ui():
+def open_ui(dbk):
     code = st.text_input("Kode berbagi (SV-xxxxxxxx)", key="op_code")
     pkg = st.file_uploader("…atau impor paket (.zip)", type=["zip"], key="op_zip")
     key = st.text_input("Kunci pesan", type="password", key="op_key")
     if st.button("Buka", type="primary"):
         try:
-            rid = release.import_zip(DB_KEY, ss.user, pkg.getvalue()) if pkg else code.strip().removeprefix("SV-")
+            rid = release.import_zip(dbk, ss.user, pkg.getvalue()) if pkg else code.strip().removeprefix("SV-")
             ss.opened = release.open_release(rid, key)
         except Exception as e:
             ss.opened = None
@@ -163,7 +205,7 @@ def open_ui():
             name, data = o["attach"]
             st.download_button(f"📎 {name}", data, file_name=name)
         if st.button("💾 Simpan teks ke arsip"):
-            db.put_message(DB_KEY, ss.user, meta["id"],
+            db.put_message(dbk, ss.user, meta["id"],
                            {"title": meta["title"], "cover": o["cover"], "lyrics": o["lyrics"]})
             st.toast("Tersimpan di arsip terenkripsi.")
 
@@ -174,9 +216,8 @@ def open_ui():
                  else f"❌ {name}: hash tidak ditemukan (file diubah / bukan dari registri ini)")
 
 
-# ====================== Arsip & registri ======================
-def archive_ui():
-    msgs = db.list_messages(DB_KEY, ss.user)
+def archive_ui(dbk):
+    msgs = db.list_messages(dbk, ss.user)
     if not msgs:
         st.info("Arsip kosong.")
     for m in msgs:
@@ -200,27 +241,6 @@ def chain_ui():
         st.success(f"Terdaftar di blok #{hit['block']}.") if hit else st.error("Tidak terdaftar / sudah berubah.")
 
 
-def secret_ui():
-    c1, c2 = st.columns([5, 1])
-    c1.success(f"Mode rahasia aktif: {ss.user}")
-    if c2.button("Keluar"):
-        ss.user, ss.opened, ss.last = None, None, None
-        st.rerun()
-    t_make, t_open, t_arch, t_chain = st.tabs(["🎼 Buat", "🔓 Buka", "🗄️ Arsip", "⛓️ Registri"])
-    with t_make:
-        make_ui()
-    with t_open:
-        open_ui()
-    with t_arch:
-        archive_ui()
-    with t_chain:
-        chain_ui()
-
-
 # ====================== Halaman utama ======================
-st.title("🎵 SonicVault")
-tab_play, tab_acc = st.tabs(["🎧 Pemutar", "⚙️ Akun"])
-with tab_play:
-    player_ui()
-with tab_acc:
-    secret_ui() if ss.user else login_ui()
+st.title(APP_TITLE)
+crypto_mode() if ss.crypto else player_mode()

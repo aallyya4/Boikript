@@ -22,7 +22,8 @@ _CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalfac
 # ------------------------------------------------------------------ dongle
 def _is_removable(part) -> bool:
     if os.name == "nt":
-        return "removable" in part.opts.lower()
+        # terima semua drive kecuali drive sistem; banyak flashdisk dilaporkan "fixed" oleh Windows
+        return not part.mountpoint.upper().startswith(os.environ.get("SystemDrive", "C:").upper())
     return part.mountpoint.startswith(("/media", "/run/media", "/Volumes", "/mnt"))
 
 

@@ -75,6 +75,20 @@ def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
     return rid
 
 
+def list_public() -> list:
+    """Daftar lagu untuk pemutar publik (judul dan artis saja), dibaca tanpa dongle."""
+    out = []
+    metas = sorted(Path(STORAGE).glob("*/meta.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for m in metas:
+        try:
+            meta = json.loads(m.read_text())
+            if RID_RE.match(str(meta["id"])):
+                out.append({k: meta[k] for k in ("id", "title", "artist")})
+        except (OSError, ValueError, KeyError):
+            continue
+    return out
+
+
 def read_public(rid: str) -> dict:
     d = _dir(rid)
     if not (d / "meta.json").exists():
