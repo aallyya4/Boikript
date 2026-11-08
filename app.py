@@ -6,12 +6,14 @@ import hmac
 import html
 import io
 import os
+import secrets
 import time
 import wave
 
 import streamlit as st
+import streamlit.components.v1 as components
 
-from core import auth, blockchain, db, keys, release
+from core import auth, blockchain, db, fingerprint, keys, release
 from core.stego_audio import audio_capacity
 from core.stego_image import image_capacity
 
@@ -24,8 +26,9 @@ db.init()
 blockchain.ensure_genesis()
 
 ss = st.session_state
-for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None, "reg_faces": [],
-               "pub_n": 0, "pub_msg": None, "now": None}.items():
+for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None,
+               "pub_n": 0, "pub_msg": None, "now": None,
+               "fp_ok": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
     ss.setdefault(_k, _v)
 
 
@@ -104,7 +107,7 @@ def fmt_time(ts: float) -> str:
 
 
 def lock():
-    ss.user = ss.opened = ss.last = None
+    ss.user = ss.opened = ss.last = ss.fp_ok = None
 
 
 # ====================== Mode biasa: pemutar musik (tanpa dongle) ======================
@@ -214,29 +217,90 @@ def crypto_mode():
     secret_ui(dbk) if ss.user else login_ui(dbk)
 
 
+# Komponen browser untuk WebAuthn (sidik jari Windows Hello / Touch ID)
+_webauthn = components.declare_component(
+    "sv_webauthn", path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "components", "webauthn"))
+
+
+def rp_info():
+    """rp_id dan origin diambil dari alamat yang dipakai membuka aplikasi (harus 'localhost')."""
+    try:
+        host = st.context.headers.get("Host") or "localhost:8501"
+        proto = st.context.headers.get("X-Forwarded-Proto", "http")
+    except Exception:
+        host, proto = "localhost:8501", "http"
+    return (os.environ.get("SONICVAULT_RP_ID") or host.split(":")[0],
+            os.environ.get("SONICVAULT_ORIGIN") or f"{proto}://{host}")
+
+
+def fp_widget(kind: str, username: str, dbk=None):
+    """Tombol sidik jari. kind='reg' untuk mendaftar, 'auth' untuk verifikasi saat login."""
+    rp_id, origin = rp_info()
+    if ss.fp_err:
+        st.error(ss.fp_err)
+        ss.fp_err = None
+    ch = ss[f"wa_{kind}"]
+    if ch is None or ch["user"] != username:  # tantangan baru untuk tiap percobaan/username
+        if kind == "reg":
+            begin = fingerprint.begin_register(rp_id, username)
+        else:
+            rec = auth.get_fp_record(dbk, username)
+            if rec is None:
+                st.info("Akun ini belum mendaftarkan sidik jari.")
+                return
+            begin = fingerprint.begin_auth(rp_id, rec)
+        ch = ss[f"wa_{kind}"] = {**begin, "user": username, "nonce": secrets.token_hex(8)}
+    res = _webauthn(mode="create" if kind == "reg" else "get", options=ch["options"], nonce=ch["nonce"],
+                    label="🖐 Daftarkan sidik jari" if kind == "reg" else "🖐 Verifikasi sidik jari",
+                    key=f"wac_{kind}", default=None)
+    if not res or res.get("nonce") != ch["nonce"]:
+        return
+    if not res.get("ok"):
+        st.error(f"Gagal: {res.get('error')}")
+        return
+    try:
+        if kind == "reg":
+            ss.reg_fp = {"user": username, **fingerprint.finish_register(res["credential"], ch["challenge"], rp_id, origin)}
+        else:
+            rec = auth.get_fp_record(dbk, username)
+            auth.save_fp_record(dbk, username, fingerprint.finish_auth(res["credential"], ch["challenge"], rp_id, origin, rec))
+            ss.fp_ok = username
+    except Exception as e:
+        ss.fp_err = f"Verifikasi sidik jari ditolak: {e}"
+    ss[f"wa_{kind}"] = None
+    st.rerun()
+
+
 def login_ui(dbk):
     mode = st.radio("Mode", ["Masuk", "Daftar"], horizontal=True, label_visibility="collapsed")
+    u = st.text_input("Username" if mode == "Masuk" else "Username baru", key=f"u_{mode}").strip()
+    p = st.text_input("Password" if mode == "Masuk" else "Password baru (min. 6 karakter)",
+                      type="password", key=f"p_{mode}")
     if mode == "Masuk":
-        u = st.text_input("Username", key="li_u")
-        p = st.text_input("Password", type="password", key="li_p")
-        shot = st.camera_input("Verifikasi wajah", key="li_cam")
+        if not u:
+            st.caption("Isi username dulu, lalu verifikasi sidik jari.")
+        elif ss.fp_ok == u:
+            st.success("Sidik jari terverifikasi.")
+        else:
+            fp_widget("auth", u, dbk)
         if st.button("Masuk", type="primary"):
-            ok, msg = auth.login(dbk, u.strip(), p, shot.getvalue() if shot else None)
+            ok, msg = auth.login(dbk, u, p, fp_verified=(ss.fp_ok == u))
             if ok:
-                ss.user = u.strip()
+                ss.user, ss.fp_ok = u, None
                 st.rerun()
             st.error(msg)
     else:
-        u = st.text_input("Username baru", key="rg_u")
-        p = st.text_input("Password baru (min. 6 karakter)", type="password", key="rg_p")
-        shot = st.camera_input("Foto wajah (ambil 3 kali dengan sedikit variasi posisi)", key="rg_cam")
-        if st.button("➕ Simpan foto ini") and shot:
-            ss.reg_faces.append(shot.getvalue())
-        st.caption(f"Foto tersimpan: {len(ss.reg_faces)}/3")
+        if ss.reg_fp and ss.reg_fp["user"] == u:
+            st.success("Sidik jari terdaftar.")
+        elif u:
+            fp_widget("reg", u)
+        else:
+            st.caption("Isi username dulu, lalu daftarkan sidik jari.")
         if st.button("Daftar", type="primary"):
-            ok, msg = auth.register(dbk, u.strip(), p, ss.reg_faces)
+            fp = {k: ss.reg_fp[k] for k in ("id", "pk", "count")} if ss.reg_fp and ss.reg_fp["user"] == u else None
+            ok, msg = auth.register(dbk, u, p, fp)
             if ok:
-                ss.reg_faces = []
+                ss.reg_fp = None
                 st.success(msg)
             else:
                 st.error(msg)

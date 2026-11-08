@@ -1,0 +1,69 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; background: transparent; color: #fff; font-family: system-ui, sans-serif; }
+  button { background: #1db954; color: #000; font-weight: 700; border: 0; border-radius: 500px;
+           padding: 10px 22px; font-size: 14px; cursor: pointer; }
+  button:hover:not(:disabled) { background: #1ed760; }
+  button:disabled { opacity: .55; cursor: default; }
+  #m { margin-top: 8px; font-size: 13px; color: #b3b3b3; }
+</style>
+</head>
+<body>
+<button id="b" disabled>Memuat…</button>
+<div id="m"></div>
+<script>
+  // Protokol komponen Streamlit (tanpa npm): componentReady, render, setComponentValue
+  const send = (type, data) => window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
+  const btn = document.getElementById("b"), msg = document.getElementById("m");
+  let cur = null, state = null;
+
+  window.addEventListener("message", (e) => {
+    if (!e.data || e.data.type !== "streamlit:render") return;
+    const a = e.data.args;
+    if (a.nonce === cur) return;
+    cur = a.nonce; state = a;
+    btn.textContent = a.label; btn.disabled = false; msg.textContent = "";
+    send("streamlit:setFrameHeight", { height: 86 });
+  });
+
+  btn.onclick = async () => {
+    const a = state; if (!a) return;
+    btn.disabled = true; msg.textContent = "Menunggu Windows Hello (sentuh sensor sidik jari)…";
+    try {
+      if (!window.PublicKeyCredential || !PublicKeyCredential.parseCreationOptionsFromJSON)
+        throw new Error("Browser belum mendukung WebAuthn versi terbaru. Perbarui Chrome/Edge.");
+      let cred;
+      if (a.mode === "create") {
+        cred = await navigator.credentials.create({ publicKey: PublicKeyCredential.parseCreationOptionsFromJSON(a.options) });
+      } else {
+        cred = await navigator.credentials.get({ publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(a.options) });
+      }
+      msg.textContent = "Memverifikasi…";
+      send("streamlit:setComponentValue", { value: { nonce: a.nonce, ok: true, t: Date.now(), credential: cred.toJSON() }, dataType: "json" });
+    } catch (err) {
+      const raw = (err && err.name ? err.name + ": " : "") + ((err && err.message) || err);
+      let hint = "";
+      if (err && err.name === "NotAllowedError") {
+        hint = /permissions? policy|not enabled in this document/i.test(String(err.message))
+          ? " (izin WebAuthn diblokir di frame ini)"
+          : " (dialog Windows Hello dibatalkan, waktu habis, atau Windows Hello belum diatur. Klik tombol lagi lalu sentuh sensor saat dialog muncul)";
+      } else if (err && err.name === "InvalidStateError") {
+        hint = " (sidik jari untuk akun ini sudah pernah didaftarkan)";
+      } else if (err && err.name === "SecurityError") {
+        hint = " (buka aplikasi lewat http://localhost:8501, bukan alamat IP)";
+      }
+      const text = raw + hint;
+      msg.textContent = "Gagal: " + text;
+      btn.disabled = false;
+      send("streamlit:setComponentValue", { value: { nonce: a.nonce, ok: false, t: Date.now(), error: text }, dataType: "json" });
+    }
+  };
+
+  send("streamlit:componentReady", { apiVersion: 1 });
+  send("streamlit:setFrameHeight", { height: 86 });
+</script>
+</body>
+</html>

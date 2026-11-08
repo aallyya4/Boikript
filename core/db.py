@@ -34,7 +34,7 @@ def init():
     with con:
         con.executescript("""
         CREATE TABLE IF NOT EXISTS users(
-            username TEXT PRIMARY KEY, pw_hash BLOB NOT NULL, face BLOB, created REAL);
+            username TEXT PRIMARY KEY, pw_hash BLOB NOT NULL, face BLOB, created REAL, fp BLOB);
         CREATE TABLE IF NOT EXISTS tracks(
             id TEXT PRIMARY KEY, owner TEXT, meta BLOB NOT NULL, created REAL);
         CREATE TABLE IF NOT EXISTS inbox(
@@ -42,12 +42,19 @@ def init():
         CREATE TABLE IF NOT EXISTS chain(
             idx INTEGER PRIMARY KEY, ts REAL, data TEXT, prev_hash TEXT, hash TEXT);
         """)
+        if "fp" not in [r[1] for r in con.execute("PRAGMA table_info(users)")]:  # migrasi DB lama
+            con.execute("ALTER TABLE users ADD COLUMN fp BLOB")
     con.close()
 
 
 # ---- users ----
-def add_user(username: str, pw_hash: bytes, face_blob):
-    _q("INSERT INTO users VALUES (?,?,?,?)", (username, pw_hash, face_blob, time.time()))
+def add_user(username: str, pw_hash: bytes, face_blob, fp_blob=None):
+    _q("INSERT INTO users(username, pw_hash, face, created, fp) VALUES (?,?,?,?,?)",
+       (username, pw_hash, face_blob, time.time(), fp_blob))
+
+
+def set_fp(username: str, fp_blob: bytes):
+    _q("UPDATE users SET fp=? WHERE username=?", (fp_blob, username))
 
 
 def get_user(username: str):
