@@ -35,7 +35,8 @@ Tanpa flashdisk (untuk uji): `python make_dongle.py demo_dongle`, lalu set
 `SONICVAULT_DONGLE_DIR=demo_dongle` (PowerShell: `$env:SONICVAULT_DONGLE_DIR="demo_dongle"`).
 Kalau sensor sidik jari bermasalah saat uji: `SONICVAULT_SKIP_BIOMETRIC=1` melewati verifikasi biometrik (jangan dipakai saat demo).
 
-Lagu MP3 harus diubah ke WAV 16-bit: `ffmpeg -i lagu.mp3 -ar 44100 -ac 2 -sample_fmt s16 lagu.wav`
+Lagu boleh MP3/FLAC/OGG/WAV: aplikasi otomatis mengubahnya ke WAV 16-bit saat diunggah (`core/audio_convert.py`, memakai paket `soundfile`).
+Yang tidak boleh adalah mengubah *hasil stego* kembali ke MP3, karena pesannya hilang.
 
 ## Pemetaan ke kriteria dosen
 
@@ -59,6 +60,11 @@ Lagu MP3 harus diubah ke WAV 16-bit: `ffmpeg -i lagu.mp3 -ar 44100 -ac 2 -sample
    (atau set env `SONICVAULT_SECRET_HASH`).
 3. Colok dongle → daftar/masuk (password + sidik jari) → mode kripto terbuka.
 4. Dongle dicabut → mode kripto terkunci pada interaksi berikutnya. Tombol **Tutup** kembali ke pemutar.
+
+## Tampilan proses kripto
+
+Di mode kripto, setelah **Buat lagu** muncul panel **🔬 Proses enkripsi**: teks asli → hasil Vigenère (hex) → ciphertext AES-GCM/ChaCha20 (hex acak) → disisipkan ke gambar/audio/lirik.
+Setelah **Buka** muncul panel **🔬 Proses dekripsi** dengan urutan sebaliknya (dan "tidak ada pesan" untuk bagian yang kosong atau kunci yang salah). Gunakan ini saat demo untuk menunjukkan hasil enkripsi yang acak.
 
 ## Alur demo
 

@@ -14,6 +14,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from core import auth, blockchain, db, fingerprint, keys, release
+from core.audio_convert import to_wav16
 from core.stego_audio import audio_capacity
 from core.stego_image import image_capacity
 
@@ -28,7 +29,7 @@ blockchain.ensure_genesis()
 ss = st.session_state
 for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None,
                "pub_n": 0, "pub_msg": None, "now": None,
-               "fp_ok": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
+               "fp_ok": None, "last_trace": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
     ss.setdefault(_k, _v)
 
 
@@ -77,6 +78,14 @@ header[data-testid="stHeader"] { background: transparent; }
 """
 
 
+AUDIO_TYPES = ["wav", "mp3", "flac", "ogg"]
+
+
+@st.cache_data(show_spinner="Mengubah ke WAV 16-bit…")
+def wav_from_upload(raw: bytes) -> bytes:
+    return to_wav16(raw)
+
+
 def esc(text: str) -> str:
     return html.escape(str(text), quote=True).replace("\r", "").replace("\n", "<br>")
 
@@ -106,8 +115,18 @@ def fmt_time(ts: float) -> str:
     return time.strftime("%d %b %Y %H:%M", time.localtime(ts))
 
 
+def show_trace(trace: list, title: str):
+    """Tampilkan tiap tahap enkripsi/dekripsi, termasuk ciphertext acak (hex)."""
+    with st.expander(title, expanded=True):
+        for sec in trace:
+            st.markdown(f"**{sec['label']}**")
+            for name, value in sec["steps"]:
+                st.caption(name)
+                st.code(value, language=None, wrap_lines=True)
+
+
 def lock():
-    ss.user = ss.opened = ss.last = ss.fp_ok = None
+    ss.user = ss.opened = ss.last = ss.last_trace = ss.fp_ok = None
 
 
 # ====================== Mode biasa: pemutar musik (tanpa dongle) ======================
@@ -180,7 +199,7 @@ def add_song_ui():
     with st.expander("➕ Tambah lagu"):
         title = st.text_input("Judul", key=f"pb_t{n}")
         artist = st.text_input("Artis", key=f"pb_a{n}")
-        wav = st.file_uploader("File lagu (WAV)", type=["wav"], key=f"pb_w{n}")
+        wav = st.file_uploader("File lagu (MP3/WAV/FLAC/OGG)", type=AUDIO_TYPES, key=f"pb_w{n}")
         cov = st.file_uploader("Cover album (PNG/JPG)", type=["png", "jpg", "jpeg"], key=f"pb_c{n}")
         lyr = st.text_area("Lirik", height=120, key=f"pb_l{n}")
         if st.button("Tambahkan", key=f"pb_b{n}", type="primary"):
@@ -188,9 +207,8 @@ def add_song_ui():
                 st.error("Judul, artis, file lagu, dan cover wajib diisi.")
                 return
             try:
-                wave.open(io.BytesIO(wav.getvalue())).close()  # pastikan WAV valid
                 release.create_release(None, "publik", title.strip(), artist.strip(),
-                                       wav.getvalue(), cov.getvalue(), lyr)
+                                       wav_from_upload(wav.getvalue()), cov.getvalue(), lyr)
             except Exception as e:
                 st.error(f"Gagal menambahkan lagu: {e}")
                 return
@@ -324,12 +342,12 @@ def make_ui(dbk):
     c1, c2 = st.columns(2)
     title = c1.text_input("Judul lagu", key="mk_t")
     artist = c2.text_input("Artis", key="mk_a")
-    wav = st.file_uploader("Lagu pembawa (WAV 16-bit)", type=["wav"], key="mk_wav")
+    wav = st.file_uploader("Lagu pembawa (MP3/WAV/FLAC/OGG, otomatis diubah ke WAV 16-bit)", type=AUDIO_TYPES, key="mk_wav")
     cov = st.file_uploader("Cover album (PNG/JPG)", type=["png", "jpg", "jpeg"], key="mk_cov")
     lyr = st.text_area("Lirik (publik)", height=140, key="mk_lyr")
     try:
         if wav:
-            st.caption(f"Kapasitas audio: ±{audio_capacity(wav.getvalue()):,} byte")
+            st.caption(f"Kapasitas audio: ±{audio_capacity(wav_from_upload(wav.getvalue())):,} byte")
         if cov:
             st.caption(f"Kapasitas cover: ±{image_capacity(cov.getvalue()):,} byte")
     except Exception as e:
@@ -339,7 +357,7 @@ def make_ui(dbk):
     key = st.text_input("Kunci pesan (bagikan terpisah ke penerima)", type="password", key="mk_key")
     s_cover = st.text_input("📍 Cover: teks pendek (mis. lokasi)", key="mk_sc")
     rec = st.audio_input("🎙️ Audio: rekam pesan suara", key="mk_rec")
-    up = st.file_uploader("…atau unggah pesan suara (WAV)", type=["wav"], key="mk_voice")
+    up = st.file_uploader("…atau unggah pesan suara (WAV/MP3/FLAC/OGG)", type=AUDIO_TYPES, key="mk_voice")
     s_lyr = st.text_input("🕒 Lirik: teks pendek (mis. waktu)", key="mk_sl")
     att = st.file_uploader("📎 Lampiran (file apa pun)", key="mk_att")
 
@@ -348,20 +366,24 @@ def make_ui(dbk):
             st.error("Judul, artis, lagu, cover, dan lirik wajib diisi.")
         else:
             voice = rec if rec is not None else up
+            trace = []
             try:
                 ss.last = release.create_release(
-                    dbk, ss.user, title, artist, wav.getvalue(), cov.getvalue(), lyr,
+                    dbk, ss.user, title, artist, wav_from_upload(wav.getvalue()), cov.getvalue(), lyr,
                     password=key or None, cover_text=s_cover or None,
-                    voice=voice.getvalue() if voice is not None else None,
+                    voice=wav_from_upload(voice.getvalue()) if voice is not None else None,
                     lyrics_text=s_lyr or None,
-                    attach=(att.name, att.getvalue()) if att is not None else None)
+                    attach=(att.name, att.getvalue()) if att is not None else None, trace=trace)
+                ss.last_trace = trace
             except Exception as e:
-                ss.last = None
+                ss.last = ss.last_trace = None
                 st.error(str(e))
     if ss.last:
         st.success("Lagu dibuat dan hash-nya dicatat di blockchain.")
         st.code(f"SV-{ss.last}")
         st.download_button("⬇️ Unduh paket (.zip)", release.export_zip(ss.last), file_name=f"SV-{ss.last}.zip")
+        if ss.last_trace:
+            show_trace(ss.last_trace, "🔬 Proses enkripsi (yang terjadi di balik layar)")
 
 
 def open_ui(dbk):
@@ -405,6 +427,9 @@ def open_ui(dbk):
             db.put_message(dbk, ss.user, meta["id"],
                            {"title": meta["title"], "cover": o["cover"], "lyrics": o["lyrics"]})
             st.toast("Tersimpan di arsip terenkripsi.")
+
+    if o.get("trace"):
+        show_trace(o["trace"], "🔬 Proses dekripsi (yang terjadi di balik layar)")
 
     st.markdown("**Verifikasi integritas (blockchain)**")
     for name, data in (("audio", pub["audio"]), ("cover", pub["cover"]), ("lirik", pub["lyrics"].encode("utf-8"))):
