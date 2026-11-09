@@ -29,7 +29,7 @@ blockchain.ensure_genesis()
 ss = st.session_state
 for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None,
                "pub_n": 0, "pub_msg": None, "now": None,
-               "view": "home", "confirm_del": None, "flash": None, "fp_ok": None, "last_trace": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
+               "view": "home", "confirm_del": None, "flash": None, "zip_rid": None, "fp_ok": None, "last_trace": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
     ss.setdefault(_k, _v)
 
 
@@ -157,8 +157,9 @@ def manage_panel(rid: str, who: str, dbk=None):
         except ValueError as e:
             st.error(str(e))
     st.divider()
+    label = "Lagu ini akan dihapus. Lanjutkan?" if who == "publik" else "Lagu ini akan dihapus permanen. Lanjutkan?"
     if ss.confirm_del == rid:
-        st.warning("Lagu ini akan dihapus permanen. Lanjutkan?")
+        st.warning(label)
         c1, c2 = st.columns(2)
         if c1.button("Ya, hapus", key=f"del_y_{rid}", type="primary"):
             try:
@@ -172,7 +173,7 @@ def manage_panel(rid: str, who: str, dbk=None):
         if c2.button("Batal", key=f"del_n_{rid}"):
             ss.confirm_del = None
             st.rerun()
-    elif st.button("🗑 Hapus lagu", key=f"del_{rid}"):
+    elif st.button("🗑 Hapus lagu" if who == "publik" else "🗑 Hapus permanen", key=f"del_{rid}"):
         ss.confirm_del = rid
         st.rerun()
 
@@ -232,9 +233,8 @@ def song_view(now: dict):
     if st.button("← Beranda", key="back_home"):
         go("home")  # lagu tetap terputar: bar pemutar tidak ikut diganti
     hero(now)
-    if release.can_manage(now["id"], "publik"):
-        with st.expander("⚙️ Edit / hapus lagu"):
-            manage_panel(now["id"], "publik")
+    with st.expander("⚙️ Edit / hapus lagu"):
+        manage_panel(now["id"], "publik")
 
 
 def player_mode():
@@ -385,6 +385,27 @@ def login_ui(dbk):
                 st.error(msg)
 
 
+def trash_item(t: dict):
+    c1, c2 = st.columns(2)
+    if c1.button("↩️ Pulihkan", key=f"rs_{t['id']}"):
+        release.restore_song(t["id"], ss.user)
+        ss.flash = "Lagu dipulihkan ke pemutar."
+        st.rerun()
+    if ss.confirm_del == t["id"]:
+        st.warning("Hapus permanen? Semua isi lagu ikut hilang.")
+        d1, d2 = st.columns(2)
+        if d1.button("Ya, hapus permanen", key=f"tp_y_{t['id']}", type="primary"):
+            release.delete_song(t["id"], ss.user)
+            ss.confirm_del, ss.flash = None, "Lagu dihapus permanen."
+            st.rerun()
+        if d2.button("Batal", key=f"tp_n_{t['id']}"):
+            ss.confirm_del = None
+            st.rerun()
+    elif c2.button("🗑 Hapus permanen", key=f"tp_{t['id']}"):
+        ss.confirm_del = t["id"]
+        st.rerun()
+
+
 def manage_ui(dbk):
     show_flash()
     songs = [t for t in release.list_public() if release.can_manage(t["id"], ss.user)]
@@ -394,7 +415,24 @@ def manage_ui(dbk):
                "Untuk mengganti keduanya, hapus lagu lalu buat ulang. Pesan tersembunyi di lirik tetap aman saat lirik diedit.")
     for t in songs:
         with st.expander(f'{t["title"]} — {t["artist"]}'):
+            st.caption("Kode berbagi")
+            st.code(f"SV-{t['id']}")
+            if st.button("📦 Siapkan paket (.zip)", key=f"zp_{t['id']}"):
+                ss.zip_rid = t["id"]
+            if ss.zip_rid == t["id"]:
+                st.download_button("⬇️ Unduh paket (.zip)", release.export_zip(t["id"]),
+                                   file_name=f"SV-{t['id']}.zip", key=f"dl_{t['id']}")
+            st.divider()
             manage_panel(t["id"], ss.user, dbk)
+    trash = [t for t in release.list_hidden() if release.can_manage(t["id"], ss.user)]
+    if trash:
+        st.markdown("**🗑 Sampah** (lagu yang dihapus dari pemutar biasa)")
+        st.caption("Dari pemutar biasa, lagu buatan mode kripto hanya disembunyikan supaya pesan di dalamnya tidak hilang. "
+                   "Di sini kamu bisa memulihkan atau menghapusnya permanen.")
+        for t in trash:
+            with st.expander(f'{t["title"]} — {t["artist"]}'):
+                st.code(f"SV-{t['id']}")
+                trash_item(t)
 
 
 def secret_ui(dbk):
@@ -468,6 +506,8 @@ def make_ui(dbk):
     if ss.last:
         st.success("Lagu dibuat dan hash-nya dicatat di blockchain.")
         st.code(f"SV-{ss.last}")
+        st.caption("Kode ini juga bisa dilihat lagi di tab Kelola. Pesan, audio, dan lampiran muncul di tab Buka "
+                   "setelah kamu memasukkan kode dan kunci tiap bagian.")
         st.download_button("⬇️ Unduh paket (.zip)", release.export_zip(ss.last), file_name=f"SV-{ss.last}.zip")
         if ss.last_trace:
             show_trace(ss.last_trace, "🔬 Proses enkripsi (yang terjadi di balik layar)")
