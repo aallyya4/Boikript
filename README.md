@@ -61,6 +61,20 @@ Yang tidak boleh adalah mengubah *hasil stego* kembali ke MP3, karena pesannya h
 3. Colok dongle → daftar/masuk (password + sidik jari) → mode kripto terbuka.
 4. Dongle dicabut → mode kripto terkunci pada interaksi berikutnya. Tombol **Tutup** kembali ke pemutar.
 
+## Kunci terpisah per bagian
+
+Cover, audio, lirik, dan lampiran masing-masing punya **kunci sendiri**. Satu kunci hanya membuka bagiannya; bagian lain tetap terkunci sampai kuncinya juga diisi.
+Bagikan tiap kunci lewat jalur atau orang yang berbeda, jadi satu kebocoran tidak membuka seluruh pesan. Boleh juga mengisi kunci yang sama untuk beberapa bagian.
+Saat membuka, bagian yang kunci-nya belum diisi dan yang kuncinya salah tampil sama ("terkunci/kosong"), jadi orang luar tidak bisa tahu bagian mana yang benar-benar berisi pesan.
+
+## Arsip
+
+Setelah pesan terbuka, tombol **Simpan teks ke arsip** menyimpan teks yang sudah terbaca ke database, terenkripsi AES-GCM dengan kunci dari dongle. Arsip hanya bisa dibaca dengan dongle terpasang dan login. Ini yang memenuhi kriteria "pesan penting dienkripsi pada basisdata".
+
+## Pemutar
+
+Klik **▶ Putar** membuka halaman lagu (cover, judul, lirik besar) dan bar pemutar di bawah. **← Beranda** (atau tombol Beranda di sidebar) kembali ke daftar lagu tanpa menghentikan lagu yang sedang diputar. Mencari lagu juga kembali ke beranda.
+
 ## Tampilan proses kripto
 
 Di mode kripto, setelah **Buat lagu** muncul panel **🔬 Proses enkripsi**: teks asli → hasil Vigenère (hex) → ciphertext AES-GCM/ChaCha20 (hex acak) → disisipkan ke gambar/audio/lirik.
@@ -70,9 +84,9 @@ Setelah **Buka** muncul panel **🔬 Proses dekripsi** dengan urutan sebaliknya 
 
 1. Tunjukkan pemutar biasa: tambah satu lagu lewat **Tambah lagu**, cari, dan putar. Ketik frasa rahasia tanpa dongle → hanya muncul "Colok dongle".
 2. Colok dongle → Daftar (password + sidik jari) → Masuk (password + sidik jari).
-3. **Buat**: pilih `lagu_demo.wav` dan `cover_demo.png`, isi lirik. Isi kunci pesan, lalu cover = lokasi, rekam suara = kegiatan, lirik = waktu.
+3. **Buat**: pilih lagu dan cover, isi lirik. Isi tiap bagian beserta kuncinya sendiri: cover = lokasi, rekam suara = kegiatan, lirik = waktu.
 4. Salin kode `SV-xxxxxxxx` (atau unduh zip) dan bagikan kuncinya terpisah.
-5. **Buka**: tanpa kunci / kunci salah → tampak lagu biasa. Dengan kunci benar → tiap bagian muncul.
+5. **Buka**: isi satu kunci saja → hanya bagian itu yang terbuka; isi semuanya → pesan utuh.
 6. Simpan teks ke **Arsip** (tersimpan terenkripsi di database).
 7. Ubah 1 byte file di `storage/<id>/audio.wav`, buka lagi → verifikasi blockchain ❌.
 8. Cabut dongle → mode kripto terkunci.

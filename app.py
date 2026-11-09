@@ -29,7 +29,7 @@ blockchain.ensure_genesis()
 ss = st.session_state
 for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None,
                "pub_n": 0, "pub_msg": None, "now": None,
-               "fp_ok": None, "last_trace": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
+               "view": "home", "fp_ok": None, "last_trace": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
     ss.setdefault(_k, _v)
 
 
@@ -37,7 +37,7 @@ CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;600;800&display=swap');
 html, body, .stApp, button, input, textarea { font-family: 'Figtree', system-ui, sans-serif !important; }
-footer, [data-testid="stToolbar"], [data-testid="stDecoration"] { display: none !important; }
+footer, #MainMenu, [data-testid="stDecoration"], [data-testid="stAppDeployButton"] { display: none !important; }
 header[data-testid="stHeader"] { background: transparent; }
 .block-container { padding-top: 2rem; padding-bottom: 7.5rem; max-width: 1400px; }
 [data-testid="stSidebar"] { background: #000; border-right: none; }
@@ -109,6 +109,8 @@ def on_search():
     if is_secret(ss.search):
         ss.crypto = True
         ss.search = ""  # kotak cari kembali kosong, tidak meninggalkan jejak
+    elif ss.search.strip():
+        ss.view = "home"  # mencari lagu selalu menampilkan hasil di beranda
 
 
 def fmt_time(ts: float) -> str:
@@ -135,6 +137,13 @@ def greeting() -> str:
     return "Selamat pagi" if h < 11 else "Selamat siang" if h < 15 else "Selamat sore" if h < 18 else "Selamat malam"
 
 
+def go(view: str, rid=None):
+    ss.view = view
+    if rid:
+        ss.now = rid
+    st.rerun()
+
+
 def hero(t: dict):
     r, g, b = accent(t["id"])
     st.markdown(f"<style>.st-key-hero{{background:linear-gradient(180deg,rgba({r},{g},{b},.8) 0%,#121212 100%);}}</style>",
@@ -151,6 +160,7 @@ def hero(t: dict):
 
 
 def now_bar(t: dict):
+    """Bar pemutar. Harus dibuat di posisi yang sama pada semua tampilan supaya lagu tidak terputus."""
     with st.container(key="np_bar"):
         c1, c2, c3 = st.columns([0.7, 2.6, 5], vertical_alignment="center")
         c1.image(thumb(t["id"], 120), width=56)
@@ -159,19 +169,10 @@ def now_bar(t: dict):
         c3.audio(release.read_audio(t["id"]), format="audio/wav", autoplay=True)
 
 
-def player_mode():
-    st.text_input("Cari", key="search", on_change=on_search, placeholder="Mau dengerin apa?",
-                  label_visibility="collapsed")
+def home_view(all_tracks: dict):
     q = ss.search.strip().lower()
-    tracks = [t for t in release.list_public() if q in f'{t["title"]} {t["artist"]}'.lower()]
-    all_tracks = {t["id"]: t for t in release.list_public()}
-    now = all_tracks.get(ss.now)
-
-    if now:
-        hero(now)
-    else:
-        st.markdown(f'<div class="sp-h1">{greeting()}</div>', unsafe_allow_html=True)
-
+    tracks = [t for t in all_tracks.values() if q in f'{t["title"]} {t["artist"]}'.lower()]
+    st.markdown(f'<div class="sp-h1">{greeting()}</div>', unsafe_allow_html=True)
     st.markdown('<div class="sp-h2">Lagu kamu</div>', unsafe_allow_html=True)
     if not tracks:
         st.info("Lagu tidak ditemukan." if q else "Belum ada lagu. Tambahkan lewat menu di samping.")
@@ -184,10 +185,26 @@ def player_mode():
                             unsafe_allow_html=True)
                 playing = ss.now == t["id"]
                 if st.button("♪ Diputar" if playing else "▶ Putar", key=f"play_{t['id']}", type="primary"):
-                    ss.now = t["id"]
-                    st.rerun()
+                    go("song", t["id"])
+
+
+def song_view(now: dict):
+    if st.button("← Beranda", key="back_home"):
+        go("home")  # lagu tetap terputar: bar pemutar tidak ikut diganti
+    hero(now)
+
+
+def player_mode():
+    all_tracks = {t["id"]: t for t in release.list_public()}
+    now = all_tracks.get(ss.now)
     if now:
-        now_bar(now)
+        now_bar(now)  # selalu elemen pertama setelah CSS, jadi tidak di-remount saat pindah tampilan
+    st.text_input("Cari", key="search", on_change=on_search, placeholder="Mau dengerin apa?",
+                  label_visibility="collapsed")
+    if now and ss.view == "song":
+        song_view(now)
+    else:
+        home_view(all_tracks)
 
 
 def add_song_ui():
@@ -354,12 +371,23 @@ def make_ui(dbk):
         st.error(f"File tidak bisa dibaca: {e}")
 
     st.markdown("**Pesan rahasia** (tiap bagian opsional)")
-    key = st.text_input("Kunci pesan (bagikan terpisah ke penerima)", type="password", key="mk_key")
-    s_cover = st.text_input("📍 Cover: teks pendek (mis. lokasi)", key="mk_sc")
-    rec = st.audio_input("🎙️ Audio: rekam pesan suara", key="mk_rec")
-    up = st.file_uploader("…atau unggah pesan suara (WAV/MP3/FLAC/OGG)", type=AUDIO_TYPES, key="mk_voice")
-    s_lyr = st.text_input("🕒 Lirik: teks pendek (mis. waktu)", key="mk_sl")
-    att = st.file_uploader("📎 Lampiran (file apa pun)", key="mk_att")
+    st.caption("Tiap bagian punya kunci sendiri. Bagikan kuncinya lewat jalur atau orang yang berbeda, sehingga "
+               "satu kunci yang bocor tidak membuka bagian lain. Boleh mengisi kunci yang sama jika mau.")
+    c1, c2 = st.columns([3, 2])
+    s_cover = c1.text_input("📍 Cover: teks pendek (mis. lokasi)", key="mk_sc")
+    k_cover = c2.text_input("Kunci cover", type="password", key="mk_kc")
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        rec = st.audio_input("🎙️ Audio: rekam pesan suara", key="mk_rec")
+        up = st.file_uploader("…atau unggah pesan suara (WAV/MP3/FLAC/OGG)", type=AUDIO_TYPES, key="mk_voice")
+    k_audio = c2.text_input("Kunci audio", type="password", key="mk_ka")
+    c1, c2 = st.columns([3, 2])
+    s_lyr = c1.text_input("🕒 Lirik: teks pendek (mis. waktu)", key="mk_sl")
+    k_lyr = c2.text_input("Kunci lirik", type="password", key="mk_kl")
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        att = st.file_uploader("📎 Lampiran (file apa pun)", key="mk_att")
+    k_att = c2.text_input("Kunci lampiran", type="password", key="mk_kt")
 
     if st.button("Buat lagu", type="primary"):
         if not (title and artist and wav and cov and lyr):
@@ -370,7 +398,8 @@ def make_ui(dbk):
             try:
                 ss.last = release.create_release(
                     dbk, ss.user, title, artist, wav_from_upload(wav.getvalue()), cov.getvalue(), lyr,
-                    password=key or None, cover_text=s_cover or None,
+                    slot_keys={"cover": k_cover, "audio": k_audio, "lyrics": k_lyr, "attach": k_att},
+                    cover_text=s_cover or None,
                     voice=wav_from_upload(voice.getvalue()) if voice is not None else None,
                     lyrics_text=s_lyr or None,
                     attach=(att.name, att.getvalue()) if att is not None else None, trace=trace)
@@ -389,11 +418,16 @@ def make_ui(dbk):
 def open_ui(dbk):
     code = st.text_input("Kode berbagi (SV-xxxxxxxx)", key="op_code")
     pkg = st.file_uploader("…atau impor paket (.zip)", type=["zip"], key="op_zip")
-    key = st.text_input("Kunci pesan", type="password", key="op_key")
+    st.caption("Isi kunci yang kamu punya. Bagian yang kuncinya belum diisi tetap terkunci.")
+    c1, c2, c3, c4 = st.columns(4)
+    sk = {"cover": c1.text_input("Kunci cover", type="password", key="op_kc"),
+          "audio": c2.text_input("Kunci audio", type="password", key="op_ka"),
+          "lyrics": c3.text_input("Kunci lirik", type="password", key="op_kl"),
+          "attach": c4.text_input("Kunci lampiran", type="password", key="op_kt")}
     if st.button("Buka", type="primary"):
         try:
             rid = release.import_zip(dbk, ss.user, pkg.getvalue()) if pkg else code.strip().removeprefix("SV-")
-            ss.opened = release.open_release(rid, key)
+            ss.opened = release.open_release(rid, slot_keys=sk)
         except Exception as e:
             ss.opened = None
             st.error(f"Gagal membuka: {e}")
@@ -409,8 +443,9 @@ def open_ui(dbk):
         st.audio(pub["audio"], format="audio/wav")
 
     found = [k for k in ("cover", "audio", "lyrics", "attach") if o[k]]
+    names = {"cover": "📍 Cover", "audio": "🎙️ Audio", "lyrics": "🕒 Lirik", "attach": "📎 Lampiran"}
     if not found:
-        st.warning("Tidak ada pesan yang terbuka: ini lagu biasa, atau kuncinya salah.")
+        st.warning("Belum ada bagian pesan yang terbuka: ini lagu biasa, atau kuncinya belum diisi / salah.")
     else:
         st.success(f"{len(found)} bagian pesan terbuka. Gabungkan semuanya untuk memahami maksudnya.")
         if o["cover"]:
@@ -427,6 +462,9 @@ def open_ui(dbk):
             db.put_message(dbk, ss.user, meta["id"],
                            {"title": meta["title"], "cover": o["cover"], "lyrics": o["lyrics"]})
             st.toast("Tersimpan di arsip terenkripsi.")
+    for k in ("cover", "audio", "lyrics") + (("attach",) if pub["attach"] else ()):
+        if not o[k]:  # kunci belum diisi dan kunci salah sengaja tidak dibedakan dari "memang kosong"
+            st.caption(f"🔒 {names[k]}: " + ("kunci belum diisi" if k in o["skipped"] else "kosong atau kunci salah"))
 
     if o.get("trace"):
         show_trace(o["trace"], "🔬 Proses dekripsi (yang terjadi di balik layar)")
@@ -468,6 +506,10 @@ st.markdown(CSS, unsafe_allow_html=True)
 with st.sidebar:
     st.markdown('<div class="sp-brand">🎵 Sonic Player</div>', unsafe_allow_html=True)
     if not ss.crypto:
+        if st.button("🏠 Beranda", key="nav_home"):
+            go("home")
+        if ss.now and st.button("♪ Sedang diputar", key="nav_song"):
+            go("song")
         add_song_ui()
 if ss.crypto:
     crypto_mode()

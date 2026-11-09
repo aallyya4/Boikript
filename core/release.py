@@ -43,27 +43,52 @@ def _text_keys(root: bytes, name: str):
     return keys.slot_key(root, f"{name}-aes"), keys.slot_key(root, f"{name}-vig", 16)
 
 
+SLOT_NAMES = {"cover": "Cover", "audio": "Audio", "lyrics": "Lirik", "attach": "Lampiran"}
+
+
+def _root_getter(pw, salt: bytes):
+    """Satu kunci induk per kata sandi unik (PBKDF2 mahal, jadi di-cache)."""
+    cache = {}
+
+    def root(slot: str) -> bytes:
+        p = pw(slot)
+        if p not in cache:
+            cache[p] = keys.root_key(p, salt)
+        return cache[p]
+    return root
+
+
 def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
-                   password=None, cover_text=None, voice=None, lyrics_text=None, attach=None, trace=None):
+                   password=None, cover_text=None, voice=None, lyrics_text=None, attach=None,
+                   trace=None, slot_keys=None):
     """Buat lagu. Semua pesan rahasia opsional; tanpa satu pun, hasilnya lagu biasa.
+
+    Tiap bagian punya kunci sendiri lewat slot_keys = {"cover": ..., "audio": ..., "lyrics": ..., "attach": ...}.
+    Jika sebuah bagian tidak punya kunci sendiri, dipakai `password` (kunci bersama).
     db_key boleh None untuk lagu publik (upload dari pemutar biasa)."""
-    wants = any([cover_text, voice, lyrics_text, attach])
-    if wants and not password:
-        raise ValueError("Isi kunci pesan untuk menyimpan pesan rahasia.")
+    slot_keys = slot_keys or {}
+
+    def pw(slot):
+        return slot_keys.get(slot) or password
+
+    used = {"cover": cover_text, "audio": voice, "lyrics": lyrics_text, "attach": attach}
+    for slot, val in used.items():
+        if val and not pw(slot):
+            raise ValueError(f"Isi kunci untuk bagian {SLOT_NAMES[slot]}.")
     rid = secrets.token_hex(4)
     salt = keys.new_salt()
-    root = keys.root_key(password, salt) if wants else None
+    root = _root_getter(pw, salt)
 
     cover_png, audio, public = to_png(cover_img), carrier_wav, lyrics
     attach_blob = None
-    if wants:
+    if any(used.values()):
         _t(trace, "kunci", "Kunci", [("Penurunan kunci",
-           "Kunci pesan + salt acak -> PBKDF2 (200.000 iterasi) -> HKDF -> kunci terpisah untuk tiap bagian. "
-           "Kunci tidak ditampilkan.")])
+           "Tiap bagian punya kunci sendiri. Kunci + salt acak -> PBKDF2 (200.000 iterasi) -> HKDF -> kunci enkripsi "
+           "dan kunci posisi bit. Satu kunci yang bocor tidak membuka bagian lain. Kunci tidak ditampilkan.")])
     if cover_text:  # slot cover: super enkripsi + LSB gambar
-        ek, vk = _text_keys(root, "cover")
+        ek, vk = _text_keys(root("cover"), "cover")
         vig, blob = encrypt_text_steps(cover_text, ek, vk)
-        cover_png = embed_image(cover_png, blob, keys.slot_key(root, "cover-pos"))
+        cover_png = embed_image(cover_png, blob, keys.slot_key(root("cover"), "cover-pos"))
         _t(trace, "cover", "Cover album (teks: super enkripsi + steganografi gambar)", [
             ("1. Teks asli (plaintext)", cover_text),
             ("2. Vigenere (klasik), hasil dalam hex", _hex(vig)),
@@ -71,15 +96,15 @@ def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
             ("4. Steganografi LSB", f"{len(blob) * 8 + 32:,} bit disisipkan ke bit terakhir piksel cover "
                                     "(posisi diacak oleh kunci). Gambar tampak sama.")])
     if voice:       # slot audio: ChaCha20 + LSB audio
-        blob = encrypt_bytes(voice, keys.slot_key(root, "audio-enc"))
-        audio = embed_audio(audio, blob, keys.slot_key(root, "audio-pos"))
+        blob = encrypt_bytes(voice, keys.slot_key(root("audio"), "audio-enc"))
+        audio = embed_audio(audio, blob, keys.slot_key(root("audio"), "audio-pos"))
         _t(trace, "audio", "Audio (pesan suara: enkripsi file + steganografi audio)", [
             ("1. Pesan suara asli", f"file WAV {len(voice):,} byte"),
             ("2. ChaCha20-Poly1305 = ciphertext akhir: nonce + isi + tag, awalnya dalam hex", _hex(blob)),
             ("3. Steganografi LSB", f"{len(blob) * 8 + 32:,} bit disisipkan ke bit terakhir sampel lagu "
                                     "(posisi diacak oleh kunci). Lagu terdengar sama.")])
     if lyrics_text:  # slot lirik: super enkripsi + zero-width
-        ek, vk = _text_keys(root, "lyrics")
+        ek, vk = _text_keys(root("lyrics"), "lyrics")
         vig, blob = encrypt_text_steps(lyrics_text, ek, vk)
         public = embed_text(lyrics, blob)
         _t(trace, "lyrics", "Lirik (teks: super enkripsi + steganografi teks)", [
@@ -91,7 +116,7 @@ def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
     if attach:      # slot lampiran: ChaCha20
         name, data = attach
         nb = name.encode("utf-8")
-        attach_blob = encrypt_bytes(len(nb).to_bytes(2, "big") + nb + data, keys.slot_key(root, "attach-enc"))
+        attach_blob = encrypt_bytes(len(nb).to_bytes(2, "big") + nb + data, keys.slot_key(root("attach"), "attach-enc"))
         _t(trace, "attach", "Lampiran (enkripsi file)", [
             ("1. File asli", f"{name} ({len(data):,} byte)"),
             ("2. ChaCha20-Poly1305 = ciphertext akhir, awalnya dalam hex", _hex(attach_blob)),
@@ -162,54 +187,78 @@ def read_public(rid: str) -> dict:
             "lyrics": (d / "lyrics.txt").read_bytes().decode("utf-8"), "attach": attach}
 
 
-def open_release(rid: str, password: str) -> dict:
-    """Coba buka tiap slot. Slot yang gagal dianggap kosong (lagu biasa / kunci salah)."""
+def open_release(rid: str, password=None, slot_keys=None) -> dict:
+    """Coba buka tiap bagian dengan kuncinya masing-masing (slot_keys). Bagian tanpa kunci dilewati.
+    Bagian yang gagal (kunci salah / memang kosong) dianggap kosong; keduanya tidak bisa dibedakan."""
+    slot_keys = slot_keys or {}
+
+    def pw(slot):
+        return slot_keys.get(slot) or password
+
     pub = read_public(rid)
     meta = json.loads((_dir(rid) / "meta.json").read_text())
-    root = keys.root_key(password, bytes.fromhex(meta["salt"]))
+    root = _root_getter(pw, bytes.fromhex(meta["salt"]))
     tr = []
-    out = {"meta": meta, "pub": pub, "cover": None, "audio": None, "lyrics": None, "attach": None, "trace": tr}
+    out = {"meta": meta, "pub": pub, "cover": None, "audio": None, "lyrics": None, "attach": None,
+           "skipped": [], "trace": tr}
     none = ("Hasil", "Tidak ada pesan, atau kunci salah (tag keaslian tidak cocok), jadi dianggap kosong.")
-    try:
-        ek, vk = _text_keys(root, "cover")
-        ct = extract_image(pub["cover"], keys.slot_key(root, "cover-pos"))
-        vig, text = decrypt_text_steps(ct, ek, vk)
-        out["cover"] = text
-        _t(tr, "cover", "Cover album", [
-            ("1. Ciphertext diambil dari bit terakhir piksel (hex)", _hex(ct)),
-            ("2. Dekripsi AES-256-GCM, hasilnya tahap Vigenere (hex)", _hex(vig)),
-            ("3. Balik Vigenere = teks asli", text)])
-    except FAIL:
-        _t(tr, "cover", "Cover album", [none])
-    try:
-        blob = extract_audio(pub["audio"], keys.slot_key(root, "audio-pos"))
-        out["audio"] = decrypt_bytes(blob, keys.slot_key(root, "audio-enc"))
-        _t(tr, "audio", "Audio", [
-            ("1. Ciphertext diambil dari bit terakhir sampel lagu (hex)", _hex(blob)),
-            ("2. Dekripsi ChaCha20-Poly1305 = pesan suara asli", f"file WAV {len(out['audio']):,} byte (bisa diputar)")])
-    except FAIL:
-        _t(tr, "audio", "Audio", [none])
-    try:
-        ek, vk = _text_keys(root, "lyrics")
-        ct = extract_text(pub["lyrics"])
-        vig, text = decrypt_text_steps(ct, ek, vk)
-        out["lyrics"] = text
-        _t(tr, "lyrics", "Lirik", [
-            ("1. Ciphertext diambil dari karakter tak terlihat di lirik (hex)", _hex(ct)),
-            ("2. Dekripsi AES-256-GCM, hasilnya tahap Vigenere (hex)", _hex(vig)),
-            ("3. Balik Vigenere = teks asli", text)])
-    except FAIL:
-        _t(tr, "lyrics", "Lirik", [none])
-    if pub["attach"]:
+    skip = ("Hasil", "Kunci bagian ini belum diisi, bagian dilewati.")
+
+    if not pw("cover"):
+        out["skipped"].append("cover"); _t(tr, "cover", "Cover album", [skip])
+    else:
         try:
-            raw = decrypt_bytes(pub["attach"], keys.slot_key(root, "attach-enc"))
-            n = int.from_bytes(raw[:2], "big")
-            out["attach"] = (raw[2:2 + n].decode("utf-8"), raw[2 + n:])
-            _t(tr, "attach", "Lampiran", [
-                ("1. Isi attach.enc (ciphertext, hex)", _hex(pub["attach"])),
-                ("2. Dekripsi ChaCha20-Poly1305 = file asli", f"{out['attach'][0]} ({len(out['attach'][1]):,} byte)")])
+            ek, vk = _text_keys(root("cover"), "cover")
+            ct = extract_image(pub["cover"], keys.slot_key(root("cover"), "cover-pos"))
+            vig, text = decrypt_text_steps(ct, ek, vk)
+            out["cover"] = text
+            _t(tr, "cover", "Cover album", [
+                ("1. Ciphertext diambil dari bit terakhir piksel (hex)", _hex(ct)),
+                ("2. Dekripsi AES-256-GCM, hasilnya tahap Vigenere (hex)", _hex(vig)),
+                ("3. Balik Vigenere = teks asli", text)])
         except FAIL:
-            _t(tr, "attach", "Lampiran", [none])
+            _t(tr, "cover", "Cover album", [none])
+
+    if not pw("audio"):
+        out["skipped"].append("audio"); _t(tr, "audio", "Audio", [skip])
+    else:
+        try:
+            blob = extract_audio(pub["audio"], keys.slot_key(root("audio"), "audio-pos"))
+            out["audio"] = decrypt_bytes(blob, keys.slot_key(root("audio"), "audio-enc"))
+            _t(tr, "audio", "Audio", [
+                ("1. Ciphertext diambil dari bit terakhir sampel lagu (hex)", _hex(blob)),
+                ("2. Dekripsi ChaCha20-Poly1305 = pesan suara asli", f"file WAV {len(out['audio']):,} byte (bisa diputar)")])
+        except FAIL:
+            _t(tr, "audio", "Audio", [none])
+
+    if not pw("lyrics"):
+        out["skipped"].append("lyrics"); _t(tr, "lyrics", "Lirik", [skip])
+    else:
+        try:
+            ek, vk = _text_keys(root("lyrics"), "lyrics")
+            ct = extract_text(pub["lyrics"])
+            vig, text = decrypt_text_steps(ct, ek, vk)
+            out["lyrics"] = text
+            _t(tr, "lyrics", "Lirik", [
+                ("1. Ciphertext diambil dari karakter tak terlihat di lirik (hex)", _hex(ct)),
+                ("2. Dekripsi AES-256-GCM, hasilnya tahap Vigenere (hex)", _hex(vig)),
+                ("3. Balik Vigenere = teks asli", text)])
+        except FAIL:
+            _t(tr, "lyrics", "Lirik", [none])
+
+    if pub["attach"]:
+        if not pw("attach"):
+            out["skipped"].append("attach"); _t(tr, "attach", "Lampiran", [skip])
+        else:
+            try:
+                raw = decrypt_bytes(pub["attach"], keys.slot_key(root("attach"), "attach-enc"))
+                n = int.from_bytes(raw[:2], "big")
+                out["attach"] = (raw[2:2 + n].decode("utf-8"), raw[2 + n:])
+                _t(tr, "attach", "Lampiran", [
+                    ("1. Isi attach.enc (ciphertext, hex)", _hex(pub["attach"])),
+                    ("2. Dekripsi ChaCha20-Poly1305 = file asli", f"{out['attach'][0]} ({len(out['attach'][1]):,} byte)")])
+            except FAIL:
+                _t(tr, "attach", "Lampiran", [none])
     return out
 
 
