@@ -46,3 +46,12 @@ def verify_file(data: bytes):
         if h in d.get("files", {}).values():
             return {"block": r["idx"], "release": d.get("release")}
     return None
+
+
+def owner_of(rid: str):
+    """Pemilik lagu menurut blok pembuatannya ('publik' atau username), atau None jika tidak tercatat."""
+    for r in db.chain_rows():
+        d = json.loads(r["data"])
+        if d.get("release") == rid and d.get("action") in (None, "create"):
+            return d.get("owner")
+    return None

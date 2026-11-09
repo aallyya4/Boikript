@@ -4,6 +4,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import wave
 import zipfile
 from pathlib import Path
@@ -16,7 +17,7 @@ from .crypto_file import decrypt_bytes, encrypt_bytes
 from .crypto_text import decrypt_text_steps, encrypt_text_steps
 from .stego_audio import embed_audio, extract_audio
 from .stego_image import embed_image, extract_image, to_png
-from .stego_text import embed_text, extract_text
+from .stego_text import ONE, ZERO, embed_text, extract_text
 
 STORAGE = os.environ.get("SONICVAULT_STORAGE", "storage")
 ALLOWED = {"audio.wav", "cover.png", "lyrics.txt", "attach.enc", "meta.json"}
@@ -132,7 +133,7 @@ def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
         (d / fname).write_bytes(blob)
     (d / "meta.json").write_text(json.dumps(meta))
 
-    blockchain.add_block({"release": rid, "owner": owner,
+    blockchain.add_block({"release": rid, "owner": owner, "action": "create",
                           "files": {n.split(".")[0]: keys.sha256_hex(b) for n, b in files.items()}})
     if db_key is not None:  # lagu publik (tanpa dongle) tidak masuk katalog terenkripsi
         db.put_track(db_key, owner, rid, meta)
@@ -176,6 +177,62 @@ def cover_color(rid: str):
     m = max(r, g, b, 1)
     k = 150 / m if m > 150 else 1
     return int(r * k), int(g * k), int(b * k)
+
+
+HIDDEN = (ZERO, ONE)
+
+
+def read_meta(rid: str) -> dict:
+    return json.loads((_dir(rid) / "meta.json").read_text())
+
+
+def visible_lyrics(rid: str) -> str:
+    """Lirik tanpa karakter tak terlihat (bagian itu bisa membawa pesan rahasia)."""
+    return "".join(c for c in read_lyrics(rid) if c not in HIDDEN)
+
+
+def can_manage(rid: str, who: str) -> bool:
+    """'publik' hanya boleh mengubah lagu publik. Pengguna mode kripto boleh mengubah lagu miliknya,
+    lagu publik, dan lagu tanpa catatan pemilik (hasil impor)."""
+    owner = blockchain.owner_of(rid)
+    return owner == "publik" if who == "publik" else owner in (who, "publik", None)
+
+
+def update_song(rid: str, who: str, db_key=None, title=None, artist=None, lyrics=None):
+    """Ubah judul, artis, dan/atau lirik tampak. Pesan tersembunyi di lirik tetap dipertahankan."""
+    if not can_manage(rid, who):
+        raise ValueError("Tidak diizinkan mengubah lagu ini.")
+    meta = read_meta(rid)
+    if title is not None:
+        if not title.strip():
+            raise ValueError("Judul tidak boleh kosong.")
+        meta["title"] = title.strip()
+    if artist is not None:
+        if not artist.strip():
+            raise ValueError("Artis tidak boleh kosong.")
+        meta["artist"] = artist.strip()
+    d = _dir(rid)
+    (d / "meta.json").write_text(json.dumps(meta))
+    if lyrics is not None:
+        old = read_lyrics(rid)
+        hidden = "".join(c for c in old if c in HIDDEN)  # muatan tersembunyi ikut dipindah ke lirik baru
+        new = "".join(c for c in lyrics if c not in HIDDEN) + hidden
+        if new != old:
+            raw = new.encode("utf-8")
+            (d / "lyrics.txt").write_bytes(raw)
+            blockchain.add_block({"release": rid, "owner": who, "action": "update",
+                                  "files": {"lyrics": keys.sha256_hex(raw)}})
+    if db_key is not None and db.has_track(rid):
+        db.put_track(db_key, who, rid, meta)
+
+
+def delete_song(rid: str, who: str):
+    """Hapus lagu. Riwayatnya tetap ada di blockchain (rantai hanya bisa ditambah)."""
+    if not can_manage(rid, who):
+        raise ValueError("Tidak diizinkan menghapus lagu ini.")
+    shutil.rmtree(_dir(rid))
+    db.delete_track(rid)
+    blockchain.add_block({"release": rid, "owner": who, "action": "delete", "files": {}})
 
 
 def read_public(rid: str) -> dict:

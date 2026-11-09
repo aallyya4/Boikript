@@ -29,7 +29,7 @@ blockchain.ensure_genesis()
 ss = st.session_state
 for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None,
                "pub_n": 0, "pub_msg": None, "now": None,
-               "view": "home", "fp_ok": None, "last_trace": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
+               "view": "home", "confirm_del": None, "flash": None, "fp_ok": None, "last_trace": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
     ss.setdefault(_k, _v)
 
 
@@ -137,6 +137,46 @@ def greeting() -> str:
     return "Selamat pagi" if h < 11 else "Selamat siang" if h < 15 else "Selamat sore" if h < 18 else "Selamat malam"
 
 
+def show_flash():
+    if ss.flash:
+        st.success(ss.flash)
+        ss.flash = None
+
+
+def manage_panel(rid: str, who: str, dbk=None):
+    """Edit judul/artis/lirik dan hapus lagu. Dipakai di pemutar (who='publik') dan tab Kelola."""
+    meta = release.read_meta(rid)
+    t = st.text_input("Judul", value=meta["title"], key=f"ed_t_{rid}")
+    a = st.text_input("Artis", value=meta["artist"], key=f"ed_a_{rid}")
+    lyr = st.text_area("Lirik", value=release.visible_lyrics(rid), height=180, key=f"ed_l_{rid}")
+    if st.button("Simpan perubahan", key=f"ed_s_{rid}", type="primary"):
+        try:
+            release.update_song(rid, who, dbk, title=t, artist=a, lyrics=lyr)
+            ss.flash = "Perubahan disimpan."
+            st.rerun()
+        except ValueError as e:
+            st.error(str(e))
+    st.divider()
+    if ss.confirm_del == rid:
+        st.warning("Lagu ini akan dihapus permanen. Lanjutkan?")
+        c1, c2 = st.columns(2)
+        if c1.button("Ya, hapus", key=f"del_y_{rid}", type="primary"):
+            try:
+                release.delete_song(rid, who)
+                if ss.now == rid:
+                    ss.now, ss.view = None, "home"
+                ss.confirm_del, ss.flash = None, "Lagu dihapus."
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+        if c2.button("Batal", key=f"del_n_{rid}"):
+            ss.confirm_del = None
+            st.rerun()
+    elif st.button("🗑 Hapus lagu", key=f"del_{rid}"):
+        ss.confirm_del = rid
+        st.rerun()
+
+
 def go(view: str, rid=None):
     ss.view = view
     if rid:
@@ -192,6 +232,9 @@ def song_view(now: dict):
     if st.button("← Beranda", key="back_home"):
         go("home")  # lagu tetap terputar: bar pemutar tidak ikut diganti
     hero(now)
+    if release.can_manage(now["id"], "publik"):
+        with st.expander("⚙️ Edit / hapus lagu"):
+            manage_panel(now["id"], "publik")
 
 
 def player_mode():
@@ -201,6 +244,7 @@ def player_mode():
         now_bar(now)  # selalu elemen pertama setelah CSS, jadi tidak di-remount saat pindah tampilan
     st.text_input("Cari", key="search", on_change=on_search, placeholder="Mau dengerin apa?",
                   label_visibility="collapsed")
+    show_flash()
     if now and ss.view == "song":
         song_view(now)
     else:
@@ -341,13 +385,27 @@ def login_ui(dbk):
                 st.error(msg)
 
 
+def manage_ui(dbk):
+    show_flash()
+    songs = [t for t in release.list_public() if release.can_manage(t["id"], ss.user)]
+    if not songs:
+        st.info("Belum ada lagu yang bisa dikelola.")
+    st.caption("Cover dan audio tidak bisa diganti karena akan menghapus pesan yang tertanam di dalamnya. "
+               "Untuk mengganti keduanya, hapus lagu lalu buat ulang. Pesan tersembunyi di lirik tetap aman saat lirik diedit.")
+    for t in songs:
+        with st.expander(f'{t["title"]} — {t["artist"]}'):
+            manage_panel(t["id"], ss.user, dbk)
+
+
 def secret_ui(dbk):
     st.success(f"Mode kripto aktif: {ss.user}")
-    t_make, t_open, t_arch, t_chain = st.tabs(["🎼 Buat", "🔓 Buka", "🗄️ Arsip", "⛓️ Registri"])
+    t_make, t_open, t_manage, t_arch, t_chain = st.tabs(["🎼 Buat", "🔓 Buka", "🗂 Kelola", "🗄️ Arsip", "⛓️ Registri"])
     with t_make:
         make_ui(dbk)
     with t_open:
         open_ui(dbk)
+    with t_manage:
+        manage_ui(dbk)
     with t_arch:
         archive_ui(dbk)
     with t_chain:

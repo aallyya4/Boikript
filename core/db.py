@@ -68,6 +68,14 @@ def put_track(key: bytes, owner: str, rid: str, meta: dict):
     _q("INSERT OR REPLACE INTO tracks VALUES (?,?,?,?)", (rid, owner, blob, time.time()))
 
 
+def has_track(rid: str) -> bool:
+    return bool(_q("SELECT 1 FROM tracks WHERE id=?", (rid,)))
+
+
+def delete_track(rid: str):
+    _q("DELETE FROM tracks WHERE id=?", (rid,))
+
+
 def list_tracks(key: bytes):
     out = []
     for r in _q("SELECT * FROM tracks ORDER BY created DESC"):
