@@ -29,7 +29,7 @@ blockchain.ensure_genesis()
 ss = st.session_state
 for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None,
                "pub_n": 0, "pub_msg": None, "now": None,
-               "view": "home", "confirm_del": None, "flash": None, "zip_rid": None, "fp_ok": None, "last_trace": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
+               "view": "home", "member": None, "confirm_del": None, "flash": None, "zip_rid": None, "fp_ok": None, "last_trace": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
     ss.setdefault(_k, _v)
 
 
@@ -144,7 +144,7 @@ def show_flash():
 
 
 def manage_panel(rid: str, who: str, dbk=None):
-    """Edit judul/artis/lirik dan hapus lagu. Dipakai di pemutar (who='publik') dan tab Kelola."""
+    """Edit judul/artis/lirik dan hapus lagu. Dipakai di pemutar (who='m:<username>') dan tab Kelola (who='k:<username>')."""
     meta = release.read_meta(rid)
     t = st.text_input("Judul", value=meta["title"], key=f"ed_t_{rid}")
     a = st.text_input("Artis", value=meta["artist"], key=f"ed_a_{rid}")
@@ -157,7 +157,7 @@ def manage_panel(rid: str, who: str, dbk=None):
         except ValueError as e:
             st.error(str(e))
     st.divider()
-    label = "Lagu ini akan dihapus. Lanjutkan?" if who == "publik" else "Lagu ini akan dihapus permanen. Lanjutkan?"
+    label = "Lagu ini akan dihapus permanen. Lanjutkan?"
     if ss.confirm_del == rid:
         st.warning(label)
         c1, c2 = st.columns(2)
@@ -173,7 +173,7 @@ def manage_panel(rid: str, who: str, dbk=None):
         if c2.button("Batal", key=f"del_n_{rid}"):
             ss.confirm_del = None
             st.rerun()
-    elif st.button("🗑 Hapus lagu" if who == "publik" else "🗑 Hapus permanen", key=f"del_{rid}"):
+    elif st.button("🗑 Hapus lagu", key=f"del_{rid}"):
         ss.confirm_del = rid
         st.rerun()
 
@@ -233,8 +233,9 @@ def song_view(now: dict):
     if st.button("← Beranda", key="back_home"):
         go("home")  # lagu tetap terputar: bar pemutar tidak ikut diganti
     hero(now)
-    with st.expander("⚙️ Edit / hapus lagu"):
-        manage_panel(now["id"], "publik")
+    if ss.member and release.can_manage(now["id"], f"m:{ss.member}"):
+        with st.expander("⚙️ Edit / hapus lagu"):
+            manage_panel(now["id"], f"m:{ss.member}")
 
 
 def player_mode():
@@ -249,6 +250,31 @@ def player_mode():
         song_view(now)
     else:
         home_view(all_tracks)
+
+
+def member_ui():
+    """Akun pengguna biasa (username + password). Terpisah dari akun mode kripto."""
+    if ss.member:
+        c1, c2 = st.columns([3, 2])
+        c1.markdown(f"👤 **{ss.member}**")
+        if c2.button("Keluar", key="m_logout"):
+            ss.member, ss.confirm_del = None, None
+            st.rerun()
+        return
+    with st.expander("👤 Masuk / Daftar"):
+        mode = st.radio("Mode", ["Masuk", "Daftar"], horizontal=True, key="m_mode", label_visibility="collapsed")
+        u = st.text_input("Username", key=f"m_u_{mode}").strip()
+        p = st.text_input("Password", type="password", key=f"m_p_{mode}")
+        if st.button(mode, key="m_go", type="primary"):
+            if mode == "Masuk":
+                ok, msg = auth.login_member(u, p)
+                if ok:
+                    ss.member = u
+                    st.rerun()
+                st.error(msg)
+            else:
+                ok, msg = auth.register_member(u, p)
+                (st.success if ok else st.error)(msg)
 
 
 def add_song_ui():
@@ -268,7 +294,7 @@ def add_song_ui():
                 st.error("Judul, artis, file lagu, dan cover wajib diisi.")
                 return
             try:
-                release.create_release(None, "publik", title.strip(), artist.strip(),
+                release.create_release(None, f"m:{ss.member}", title.strip(), artist.strip(),
                                        wav_from_upload(wav.getvalue()), cov.getvalue(), lyr)
             except Exception as e:
                 st.error(f"Gagal menambahkan lagu: {e}")
@@ -385,32 +411,12 @@ def login_ui(dbk):
                 st.error(msg)
 
 
-def trash_item(t: dict):
-    c1, c2 = st.columns(2)
-    if c1.button("↩️ Pulihkan", key=f"rs_{t['id']}"):
-        release.restore_song(t["id"], ss.user)
-        ss.flash = "Lagu dipulihkan ke pemutar."
-        st.rerun()
-    if ss.confirm_del == t["id"]:
-        st.warning("Hapus permanen? Semua isi lagu ikut hilang.")
-        d1, d2 = st.columns(2)
-        if d1.button("Ya, hapus permanen", key=f"tp_y_{t['id']}", type="primary"):
-            release.delete_song(t["id"], ss.user)
-            ss.confirm_del, ss.flash = None, "Lagu dihapus permanen."
-            st.rerun()
-        if d2.button("Batal", key=f"tp_n_{t['id']}"):
-            ss.confirm_del = None
-            st.rerun()
-    elif c2.button("🗑 Hapus permanen", key=f"tp_{t['id']}"):
-        ss.confirm_del = t["id"]
-        st.rerun()
-
-
 def manage_ui(dbk):
     show_flash()
-    songs = [t for t in release.list_public() if release.can_manage(t["id"], ss.user)]
+    who = f"k:{ss.user}"
+    songs = [t for t in release.list_public() if release.can_manage(t["id"], who)]
     if not songs:
-        st.info("Belum ada lagu yang bisa dikelola.")
+        st.info("Belum ada lagu yang bisa dikelola. Lagu yang kamu buat di mode kripto muncul di sini.")
     st.caption("Cover dan audio tidak bisa diganti karena akan menghapus pesan yang tertanam di dalamnya. "
                "Untuk mengganti keduanya, hapus lagu lalu buat ulang. Pesan tersembunyi di lirik tetap aman saat lirik diedit.")
     for t in songs:
@@ -423,16 +429,7 @@ def manage_ui(dbk):
                 st.download_button("⬇️ Unduh paket (.zip)", release.export_zip(t["id"]),
                                    file_name=f"SV-{t['id']}.zip", key=f"dl_{t['id']}")
             st.divider()
-            manage_panel(t["id"], ss.user, dbk)
-    trash = [t for t in release.list_hidden() if release.can_manage(t["id"], ss.user)]
-    if trash:
-        st.markdown("**🗑 Sampah** (lagu yang dihapus dari pemutar biasa)")
-        st.caption("Dari pemutar biasa, lagu buatan mode kripto hanya disembunyikan supaya pesan di dalamnya tidak hilang. "
-                   "Di sini kamu bisa memulihkan atau menghapusnya permanen.")
-        for t in trash:
-            with st.expander(f'{t["title"]} — {t["artist"]}'):
-                st.code(f"SV-{t['id']}")
-                trash_item(t)
+            manage_panel(t["id"], who, dbk)
 
 
 def secret_ui(dbk):
@@ -493,7 +490,7 @@ def make_ui(dbk):
             trace = []
             try:
                 ss.last = release.create_release(
-                    dbk, ss.user, title, artist, wav_from_upload(wav.getvalue()), cov.getvalue(), lyr,
+                    dbk, f"k:{ss.user}", title, artist, wav_from_upload(wav.getvalue()), cov.getvalue(), lyr,
                     slot_keys={"cover": k_cover, "audio": k_audio, "lyrics": k_lyr, "attach": k_att},
                     cover_text=s_cover or None,
                     voice=wav_from_upload(voice.getvalue()) if voice is not None else None,
@@ -604,11 +601,15 @@ st.markdown(CSS, unsafe_allow_html=True)
 with st.sidebar:
     st.markdown('<div class="sp-brand">🎵 Sonic Player</div>', unsafe_allow_html=True)
     if not ss.crypto:
+        member_ui()
         if st.button("🏠 Beranda", key="nav_home"):
             go("home")
         if ss.now and st.button("♪ Sedang diputar", key="nav_song"):
             go("song")
-        add_song_ui()
+        if ss.member:
+            add_song_ui()
+        else:
+            st.caption("Masuk untuk menambah lagu.")
 if ss.crypto:
     crypto_mode()
 else:

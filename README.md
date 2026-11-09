@@ -67,13 +67,25 @@ Cover, audio, lirik, dan lampiran masing-masing punya **kunci sendiri**. Satu ku
 Bagikan tiap kunci lewat jalur atau orang yang berbeda, jadi satu kebocoran tidak membuka seluruh pesan. Boleh juga mengisi kunci yang sama untuk beberapa bagian.
 Saat membuka, bagian yang kunci-nya belum diisi dan yang kuncinya salah tampil sama ("terkunci/kosong"), jadi orang luar tidak bisa tahu bagian mana yang benar-benar berisi pesan.
 
-## Kelola lagu (CRUD)
+## Dua jenis akun
 
-- **Create:** ➕ Tambah lagu (pemutar biasa) atau tab Buat (mode kripto).
+| | Akun pemutar (pengguna biasa) | Akun mode kripto |
+|---|---|---|
+| Daftar/masuk | Sidebar **👤 Masuk / Daftar** | Setelah frasa rahasia dan dongle |
+| Syarat | Username + password | Username + password (terpisah dari akun pemutar) + sidik jari + dongle |
+| Hak | Upload lagu, edit/hapus lagu **miliknya sendiri** | Buat lagu berpesan, buka pesan, kelola lagu miliknya, arsip, registri |
+
+Tamu (tanpa akun) bisa mencari dan memutar lagu, tetapi tidak bisa menambah lagu. Mode kripto bisa dimasuki dari akun pemutar mana pun, atau tanpa akun, lewat frasa rahasia.
+Daftar akun pemutar disimpan di tabel `members` (hash bcrypt), terpisah dari tabel `users` milik mode kripto, jadi nama yang sama di kedua sisi tidak saling terkait.
+
+## Kelola lagu (CRUD) dan kepemilikan
+
+- **Create:** ➕ Tambah lagu (akun pemutar) atau tab Buat (mode kripto).
 - **Read:** pemutar, halaman lagu, dan tab Buka.
 - **Update:** edit judul, artis, dan lirik. Pesan yang tersembunyi di lirik tetap aman karena karakter tak terlihatnya dipindahkan ke lirik baru. Cover dan audio tidak bisa diganti (akan menghapus pesan yang tertanam); hapus dan buat ulang.
-- **Delete:** hapus lagu dengan konfirmasi. File dan entri katalog hilang, riwayatnya tetap ada di blockchain (rantai hanya bisa ditambah).
-- **Hak akses:** pemutar biasa hanya bisa mengubah/menghapus lagu hasil upload publik. Lagu yang dibuat di mode kripto hanya bisa dikelola dari tab **🗂 Kelola** oleh pemiliknya. Pemilik dibaca dari blok pembuatan di blockchain.
+- **Delete:** hapus permanen dengan konfirmasi. Riwayatnya tetap ada di blockchain (rantai hanya bisa ditambah).
+- **Hanya pemilik** yang bisa mengedit dan menghapus. Pemilik dibaca dari blok pembuatan di blockchain: `m:<username>` untuk akun pemutar, `k:<username>` untuk akun mode kripto. Lagu lama atau hasil impor tanpa pemilik bisa dikelola akun mode kripto mana pun.
+- Di tab **🗂 Kelola** (mode kripto) tiap lagu menampilkan kode berbagi `SV-...` dan tombol unduh paket `.zip`.
 - Setiap perubahan lirik dicatat sebagai blok baru, jadi verifikasi integritas lirik tetap lolos setelah diedit.
 
 ## Arsip

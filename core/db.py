@@ -35,6 +35,8 @@ def init():
         con.executescript("""
         CREATE TABLE IF NOT EXISTS users(
             username TEXT PRIMARY KEY, pw_hash BLOB NOT NULL, face BLOB, created REAL, fp BLOB);
+        CREATE TABLE IF NOT EXISTS members(
+            username TEXT PRIMARY KEY, pw_hash BLOB NOT NULL, created REAL);
         CREATE TABLE IF NOT EXISTS tracks(
             id TEXT PRIMARY KEY, owner TEXT, meta BLOB NOT NULL, created REAL);
         CREATE TABLE IF NOT EXISTS inbox(
@@ -59,6 +61,16 @@ def set_fp(username: str, fp_blob: bytes):
 
 def get_user(username: str):
     rows = _q("SELECT * FROM users WHERE username=?", (username,))
+    return rows[0] if rows else None
+
+
+# ---- member (akun pengguna biasa di pemutar) ----
+def add_member(username: str, pw_hash: bytes):
+    _q("INSERT INTO members(username, pw_hash, created) VALUES (?,?,?)", (username, pw_hash, time.time()))
+
+
+def get_member(username: str):
+    rows = _q("SELECT * FROM members WHERE username=?", (username,))
     return rows[0] if rows else None
 
 

@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 
 import bcrypt
@@ -104,4 +105,27 @@ def login(db_key: bytes, username: str, password: str, fp_verified: bool = False
         return True, "Masuk (mode uji, biometrik dilewati)."
     if not fp_verified:
         return False, "Verifikasi sidik jari dulu."
+    return True, "Masuk."
+
+
+# ------------------------------------------------ akun pengguna biasa (pemutar)
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,20}$")
+
+
+def register_member(username: str, password: str):
+    """Akun pengguna biasa: hanya username + password (tanpa dongle dan biometrik). Terpisah dari akun mode kripto."""
+    if not USERNAME_RE.match(username):
+        return False, "Username 3-20 karakter: huruf, angka, titik, garis bawah, atau strip."
+    if len(password) < 6:
+        return False, "Password minimal 6 karakter."
+    if db.get_member(username):
+        return False, "Username sudah dipakai."
+    db.add_member(username, hash_password(password))
+    return True, "Akun dibuat. Silakan masuk."
+
+
+def login_member(username: str, password: str):
+    row = db.get_member(username)
+    if row is None or not check_password(password, row["pw_hash"]):
+        return False, "Username atau password salah."
     return True, "Masuk."

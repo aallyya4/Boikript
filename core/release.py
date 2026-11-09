@@ -140,27 +140,18 @@ def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
     return rid
 
 
-def _list(hidden: bool) -> list:
+def list_public() -> list:
+    """Daftar semua lagu untuk pemutar (judul dan artis saja), dibaca tanpa dongle."""
     out = []
     metas = sorted(Path(STORAGE).glob("*/meta.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     for m in metas:
         try:
             meta = json.loads(m.read_text())
-            if RID_RE.match(str(meta["id"])) and bool(meta.get("hidden")) == hidden:
+            if RID_RE.match(str(meta["id"])):
                 out.append({k: meta[k] for k in ("id", "title", "artist")})
         except (OSError, ValueError, KeyError):
             continue
     return out
-
-
-def list_public() -> list:
-    """Daftar lagu untuk pemutar publik (judul dan artis saja), dibaca tanpa dongle. Lagu di sampah tidak ikut."""
-    return _list(False)
-
-
-def list_hidden() -> list:
-    """Lagu yang 'dihapus' dari pemutar publik tetapi masih tersimpan (sampah, bisa dipulihkan di mode kripto)."""
-    return _list(True)
 
 
 def read_audio(rid: str) -> bytes:
@@ -200,16 +191,22 @@ def visible_lyrics(rid: str) -> str:
     return "".join(c for c in read_lyrics(rid) if c not in HIDDEN)
 
 
+def owner_of(rid: str) -> str:
+    """Pemilik lagu: 'm:<username>' (akun pemutar), 'k:<username>' (akun mode kripto), atau 'legacy'
+    untuk lagu lama/impor tanpa pemilik."""
+    o = blockchain.owner_of(rid)
+    if o in (None, "publik"):
+        return "legacy"
+    if o.startswith(("m:", "k:")):
+        return o
+    return "k:" + o  # data lama: pemilik = akun mode kripto
+
+
 def can_manage(rid: str, who: str) -> bool:
-    """Pemutar biasa ('publik') boleh mengedit dan menghapus semua lagu (lirik tersembunyi tetap aman).
-    Pengguna mode kripto boleh mengelola lagu miliknya, lagu publik, dan lagu tanpa catatan pemilik (hasil impor)."""
-    if who == "publik":
-        return True
-    return blockchain.owner_of(rid) in (who, "publik", None)
-
-
-def _write_meta(rid: str, meta: dict):
-    (_dir(rid) / "meta.json").write_text(json.dumps(meta))
+    """Hanya pemilik yang boleh mengedit/menghapus. who = 'm:<username>' atau 'k:<username>'.
+    Lagu tanpa pemilik (lama/impor) bisa dikelola oleh akun mode kripto mana pun."""
+    o = owner_of(rid)
+    return o == who or (o == "legacy" and who.startswith("k:"))
 
 
 def update_song(rid: str, who: str, db_key=None, title=None, artist=None, lyrics=None):
@@ -225,7 +222,7 @@ def update_song(rid: str, who: str, db_key=None, title=None, artist=None, lyrics
         if not artist.strip():
             raise ValueError("Artis tidak boleh kosong.")
         meta["artist"] = artist.strip()
-    _write_meta(rid, meta)
+    (_dir(rid) / "meta.json").write_text(json.dumps(meta))
     if lyrics is not None:
         old = read_lyrics(rid)
         hidden = "".join(c for c in old if c in HIDDEN)  # muatan tersembunyi ikut dipindah ke lirik baru
@@ -239,32 +236,13 @@ def update_song(rid: str, who: str, db_key=None, title=None, artist=None, lyrics
         db.put_track(db_key, who, rid, {k: meta[k] for k in ("id", "title", "artist", "salt")})
 
 
-def delete_song(rid: str, who: str) -> str:
-    """Hapus lagu. Return 'deleted' (hilang permanen) atau 'hidden' (disembunyikan ke sampah).
-    Dari pemutar biasa, lagu buatan mode kripto hanya disembunyikan supaya pesan di dalamnya tidak ikut musnah;
-    bagi pengguna biasa keduanya tampak sama-sama 'terhapus'. Riwayat tetap ada di blockchain."""
+def delete_song(rid: str, who: str):
+    """Hapus lagu permanen. Riwayatnya tetap ada di blockchain (rantai hanya bisa ditambah)."""
     if not can_manage(rid, who):
         raise ValueError("Tidak diizinkan menghapus lagu ini.")
-    if who == "publik" and blockchain.owner_of(rid) != "publik":
-        meta = read_meta(rid)
-        meta["hidden"] = True
-        _write_meta(rid, meta)
-        blockchain.add_block({"release": rid, "owner": who, "action": "hide", "files": {}})
-        return "hidden"
     shutil.rmtree(_dir(rid))
     db.delete_track(rid)
     blockchain.add_block({"release": rid, "owner": who, "action": "delete", "files": {}})
-    return "deleted"
-
-
-def restore_song(rid: str, who: str):
-    """Pulihkan lagu dari sampah (hanya pengguna mode kripto)."""
-    if who == "publik" or not can_manage(rid, who):
-        raise ValueError("Tidak diizinkan memulihkan lagu ini.")
-    meta = read_meta(rid)
-    meta.pop("hidden", None)
-    _write_meta(rid, meta)
-    blockchain.add_block({"release": rid, "owner": who, "action": "restore", "files": {}})
 
 
 def read_public(rid: str) -> dict:
@@ -355,11 +333,7 @@ def export_zip(rid: str) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
         for f in _dir(rid).iterdir():
-            if f.name == "meta.json":
-                meta = json.loads(f.read_text())
-                meta.pop("hidden", None)
-                z.writestr("meta.json", json.dumps(meta))
-            elif f.name in ALLOWED:
+            if f.name in ALLOWED:
                 z.write(f, f.name)
     return buf.getvalue()
 
