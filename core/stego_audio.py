@@ -21,9 +21,9 @@ def audio_capacity(wav: bytes) -> int:
     return capacity(samples.size)
 
 
-def embed_audio(wav: bytes, payload: bytes, seed: bytes) -> bytes:
+def embed_audio(wav: bytes, payload: bytes, seed: bytes, probe=None) -> bytes:
     params, samples = _read(wav)
-    samples = embed_bits(samples, payload, seed)
+    samples = embed_bits(samples, payload, seed, probe)
     out = io.BytesIO()
     with wave.open(out, "wb") as w:
         w.setnchannels(params.nchannels)
@@ -33,6 +33,6 @@ def embed_audio(wav: bytes, payload: bytes, seed: bytes) -> bytes:
     return out.getvalue()
 
 
-def extract_audio(wav: bytes, seed: bytes) -> bytes:
+def extract_audio(wav: bytes, seed: bytes, probe=None) -> bytes:
     _, samples = _read(wav)
-    return extract_bits(samples, seed)
+    return extract_bits(samples, seed, probe)

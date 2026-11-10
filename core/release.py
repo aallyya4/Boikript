@@ -31,13 +31,98 @@ def _dir(rid: str) -> Path:
     return Path(STORAGE) / rid
 
 
+LABELS = {"kunci": "🔑 Kunci", "cover": "📍 Cover", "audio": "🎙️ Audio", "lyrics": "🕒 Lirik", "attach": "📎 Dokumen"}
+
+
 def _hex(b: bytes, n: int = 48) -> str:
     return b[:n].hex() + (f" ... (total {len(b)} byte)" if len(b) > n else f"  ({len(b)} byte)")
 
 
-def _t(trace, slot: str, label: str, steps: list):
+def _t(trace, slot: str, steps: list, flow=None):
     if trace is not None:
-        trace.append({"slot": slot, "label": label, "steps": steps})
+        trace.append({"slot": slot, "label": LABELS[slot], "steps": steps, "flow": flow or []})
+
+
+def _step(title: str, kind: str, value, algo=None, note=None) -> dict:
+    """kind: text | hex | table | parts | images."""
+    return {"title": title, "kind": kind, "value": value, "algo": algo, "note": note}
+
+
+def _chars(data: bytes, n: int = 8) -> dict:
+    rows = [[chr(b) if 32 <= b < 127 else "·", b, f"{b:02x}", f"{b:08b}"] for b in data[:n]]
+    return {"cols": ["Karakter", "Desimal", "Hex", "Biner"], "rows": rows}
+
+
+def _vig(inp: bytes, key: bytes, out: bytes, back: bool = False, n: int = 8) -> dict:
+    op = "−" if back else "+"
+    rows = [[i + 1, inp[i], key[i % len(key)], out[i]] for i in range(min(n, len(inp)))]
+    return {"cols": ["#", "Byte masuk", "Byte kunci", f"Hasil (masuk {op} kunci) mod 256"], "rows": rows, "secret": [2]}
+
+
+def _parts(blob: bytes) -> list:
+    nonce, tag, body = blob[:12], blob[-16:], blob[12:-16]
+    return [("Nonce, 12 byte (acak, diletakkan di depan)", nonce.hex()),
+            (f"Isi terenkripsi, {len(body)} byte", _hex(body)),
+            ("Tag keaslian, 16 byte", tag.hex())]
+
+
+def _bits(payload: bytes) -> str:
+    s = "".join(f"{b:08b}" for b in len(payload).to_bytes(4, "big") + payload)
+    group = lambda x: " ".join(x[i:i + 8] for i in range(0, len(x), 8))
+    return (f"Header panjang (32 bit):  {group(s[:32])}\n"
+            f"Isi, 64 bit pertama:     {group(s[32:96])}\n"
+            f"Total {len(s):,} bit = 32 bit header + {len(payload) * 8:,} bit ciphertext")
+
+
+def _img_rows(rows: list, width: int, read: bool = False) -> dict:
+    out = []
+    for r in rows:
+        pix, c = divmod(r[0], 3)
+        where = f"({pix % width}, {pix // width}) kanal {'RGB'[c]}"
+        out.append([where, r[1], r[2]] if read else [where, r[1], r[2], r[3]])
+    cols = ["Lokasi (piksel x,y)", "Nilai warna", "Bit paling kanan"] if read else \
+           ["Lokasi (piksel x,y)", "Nilai sebelum", "Nilai sesudah", "Bit pesan"]
+    return {"cols": cols, "rows": out}
+
+
+def _smp_rows(rows: list, read: bool = False) -> dict:
+    out = [[f"sampel #{r[0]}"] + r[1:] for r in rows]
+    cols = ["Lokasi", "Nilai sampel", "Bit paling kanan"] if read else ["Lokasi", "Nilai sebelum", "Nilai sesudah", "Bit pesan"]
+    return {"cols": cols, "rows": out}
+
+
+def _fail(e) -> dict:
+    why = ("Ciphertext terbaca, tetapi tag keaslian tidak cocok" if isinstance(e, InvalidTag)
+           else "Panjang pesan yang terbaca tidak masuk akal, atau format tidak valid")
+    return _step("Hasil", "text", f"{why}.\nArtinya tidak ada pesan di bagian ini, atau kuncinya salah. Bagian ini dianggap kosong.")
+
+
+def _text_enc_steps(text: str, vk: bytes, vig: bytes, blob: bytes) -> list:
+    raw = text.encode("utf-8")
+    return [
+        _step("Teks asli diubah menjadi byte (UTF-8)", "table", _chars(raw),
+              note=f"{len(raw)} byte. Tabel menampilkan 8 byte pertama."),
+        _step("Tahap 1: Vigenère (sandi klasik)", "table", _vig(raw, vk, vig), algo="Vigenère",
+              note="Tiap byte teks ditambah byte kunci (kunci diulang), lalu dibagi sisa 256. Hasilnya sudah tidak terbaca."),
+        _step("Hasil tahap 1 (hex)", "hex", _hex(vig), note="Sandi klasik sendirian lemah, sehingga ditumpuk dengan tahap 2."),
+        _step("Tahap 2: AES-256-GCM (sandi modern)", "parts", _parts(blob), algo="AES-256-GCM",
+              note="Hasil tahap 1 dienkripsi lagi. Nonce acak dibuat baru tiap enkripsi, jadi teks yang sama menghasilkan "
+                   "ciphertext berbeda. Tag 16 byte mendeteksi kunci salah atau data yang diubah. Ini ciphertext akhir (acak)."),
+        _step("Ciphertext diubah menjadi deretan bit", "text", _bits(blob),
+              note="Bit inilah yang akan disembunyikan. 32 bit pertama memberi tahu panjang pesan."),
+    ]
+
+
+def _text_dec_steps(ct: bytes, vig: bytes, vk: bytes, text: str) -> list:
+    return [
+        _step("Bit digabung menjadi ciphertext", "parts", _parts(ct),
+              note=f"Panjang terbaca {len(ct)} byte: nonce, isi terenkripsi, dan tag."),
+        _step("Tahap 1 terbalik: AES-256-GCM dekripsi", "hex", _hex(vig), algo="AES-256-GCM",
+              note="Tag dicek lebih dulu: cocok, jadi kunci benar dan data tidak diubah. Hasil dekripsi (hex) adalah keluaran Vigenère."),
+        _step("Tahap 2 terbalik: Vigenère", "table", _vig(vig, vk, text.encode("utf-8"), back=True), algo="Vigenère",
+              note="Tiap byte dikurangi byte kunci, lalu dibagi sisa 256."),
+        _step("Teks asli kembali", "text", text),
+    ]
 
 
 def _text_keys(root: bytes, name: str):
@@ -66,7 +151,8 @@ def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
 
     Tiap bagian punya kunci sendiri lewat slot_keys = {"cover": ..., "audio": ..., "lyrics": ..., "attach": ...}.
     Jika sebuah bagian tidak punya kunci sendiri, dipakai `password` (kunci bersama).
-    db_key boleh None untuk lagu publik (upload dari pemutar biasa)."""
+    db_key boleh None untuk lagu publik (upload dari pemutar biasa).
+    trace (list) diisi rincian tiap tahap enkripsi dan penyembunyian untuk ditampilkan."""
     slot_keys = slot_keys or {}
 
     def pw(slot):
@@ -83,45 +169,82 @@ def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
     cover_png, audio, public = to_png(cover_img), carrier_wav, lyrics
     attach_blob = None
     if any(used.values()):
-        _t(trace, "kunci", "Kunci", [("Penurunan kunci",
-           "Tiap bagian punya kunci sendiri. Kunci + salt acak -> PBKDF2 (200.000 iterasi) -> HKDF -> kunci enkripsi "
-           "dan kunci posisi bit. Satu kunci yang bocor tidak membuka bagian lain. Kunci tidak ditampilkan.")])
+        _t(trace, "kunci", [_step(
+            "Dari kunci yang kamu ketik menjadi kunci enkripsi", "text",
+            f"Salt acak (tidak rahasia): {salt.hex()}\n"
+            f"PBKDF2-SHA256: {keys.ITERATIONS:,} iterasi (membuat tebak-tebakan kunci jadi lambat)\n"
+            "HKDF: kunci dipecah per bagian dan per fungsi, misalnya cover-aes, cover-vig, cover-pos\n"
+            "Satu kunci yang bocor tidak membuka bagian lain. Nilai kunci tidak ditampilkan.",
+            algo="PBKDF2 + HKDF")],
+            flow=["Kunci ketikan", "PBKDF2 + salt", "Kunci induk", "HKDF per bagian", "Kunci enkripsi dan posisi"])
+
     if cover_text:  # slot cover: super enkripsi + LSB gambar
         ek, vk = _text_keys(root("cover"), "cover")
         vig, blob = encrypt_text_steps(cover_text, ek, vk)
-        cover_png = embed_image(cover_png, blob, keys.slot_key(root("cover"), "cover-pos"))
-        _t(trace, "cover", "Cover album (teks: super enkripsi + steganografi gambar)", [
-            ("1. Teks asli (plaintext)", cover_text),
-            ("2. Vigenere (klasik), hasil dalam hex", _hex(vig)),
-            ("3. AES-256-GCM (modern) = ciphertext akhir: nonce + isi + tag, dalam hex", _hex(blob)),
-            ("4. Steganografi LSB", f"{len(blob) * 8 + 32:,} bit disisipkan ke bit terakhir piksel cover "
-                                    "(posisi diacak oleh kunci). Gambar tampak sama.")])
+        probe = {}
+        cover_png = embed_image(cover_png, blob, keys.slot_key(root("cover"), "cover-pos"), probe)
+        steps = _text_enc_steps(cover_text, vk, vig, blob) + [
+            _step("Bit disisipkan ke bit paling kanan piksel cover", "table", _img_rows(probe["rows"], probe["width"]), algo="LSB",
+                  note=f"{probe['n_bits']:,} bit disisipkan ke {probe['n_bits']:,} dari {probe['total']:,} nilai warna. Posisinya diacak "
+                       "oleh kunci posisi (kolom Lokasi). Hanya bit paling kanan yang diganti, jadi nilai warna berubah paling banyak 1. "
+                       "Tabel menampilkan 10 bit pertama."),
+            _step("Hasil: yang terlihat sekarang", "images",
+                  [("Cover sebelum", probe["before_img"]), ("Cover sesudah", probe["after_img"]),
+                   ("Peta perubahan (titik hijau)", probe["diff_img"])],
+                  note=f"Hanya {probe['values_changed']:,} dari {probe['total']:,} nilai warna yang benar-benar berubah "
+                       f"({probe['values_changed'] / probe['total']:.3%}), masing-masing ±1. Gambar sebelum dan sesudah tampak "
+                       "sama; pesan aslinya tidak terlihat lagi, yang ada hanya ciphertext acak yang tersebar.")]
+        _t(trace, "cover", steps, flow=["Teks asli", "Vigenère", "AES-256-GCM", "Deretan bit", "LSB piksel", "Cover tampak biasa"])
+
     if voice:       # slot audio: ChaCha20 + LSB audio
         blob = encrypt_bytes(voice, keys.slot_key(root("audio"), "audio-enc"))
-        audio = embed_audio(audio, blob, keys.slot_key(root("audio"), "audio-pos"))
-        _t(trace, "audio", "Audio (pesan suara: enkripsi file + steganografi audio)", [
-            ("1. Pesan suara asli", f"file WAV {len(voice):,} byte"),
-            ("2. ChaCha20-Poly1305 = ciphertext akhir: nonce + isi + tag, awalnya dalam hex", _hex(blob)),
-            ("3. Steganografi LSB", f"{len(blob) * 8 + 32:,} bit disisipkan ke bit terakhir sampel lagu "
-                                    "(posisi diacak oleh kunci). Lagu terdengar sama.")])
+        probe = {}
+        audio = embed_audio(audio, blob, keys.slot_key(root("audio"), "audio-pos"), probe)
+        _t(trace, "audio", [
+            _step("Pesan suara asli (file)", "text", f"File WAV {len(voice):,} byte\n16 byte pertama (hex): {voice[:16].hex()}  → 'RIFF....WAVE'",
+                  note="File diperlakukan sebagai deretan byte, bukan teks."),
+            _step("Enkripsi file: ChaCha20-Poly1305", "parts", _parts(blob), algo="ChaCha20-Poly1305",
+                  note="Algoritma sengaja berbeda dari yang dipakai untuk teks (syarat dosen). Nonce acak di depan, tag 16 byte di belakang."),
+            _step("Ciphertext diubah menjadi deretan bit", "text", _bits(blob)),
+            _step("Bit disisipkan ke bit paling kanan sampel lagu", "table", _smp_rows(probe["rows"]), algo="LSB",
+                  note=f"{probe['n_bits']:,} bit masuk ke {probe['n_bits']:,} dari {probe['total']:,} sampel. Lokasi diacak oleh kunci posisi."),
+            _step("Hasil: yang terdengar sekarang", "text",
+                  f"{probe['flips']:,} dari {probe['total']:,} sampel benar-benar berubah, masing-masing paling banyak 1 "
+                  f"dari rentang ±32.768 (sekitar −90 dB).\nTelinga tidak bisa membedakannya; lagu terdengar sama persis dan "
+                  "pesan aslinya tidak terdengar.")],
+            flow=["File suara", "ChaCha20-Poly1305", "Deretan bit", "LSB sampel", "Lagu terdengar biasa"])
+
     if lyrics_text:  # slot lirik: super enkripsi + zero-width
         ek, vk = _text_keys(root("lyrics"), "lyrics")
         vig, blob = encrypt_text_steps(lyrics_text, ek, vk)
         public = embed_text(lyrics, blob)
-        _t(trace, "lyrics", "Lirik (teks: super enkripsi + steganografi teks)", [
-            ("1. Teks asli (plaintext)", lyrics_text),
-            ("2. Vigenere (klasik), hasil dalam hex", _hex(vig)),
-            ("3. AES-256-GCM (modern) = ciphertext akhir: nonce + isi + tag, dalam hex", _hex(blob)),
-            ("4. Steganografi teks", f"{len(public) - len(lyrics):,} karakter tak terlihat (zero-width) "
-                                     "ditambahkan di ujung lirik. Lirik tampak sama.")])
-    if attach:      # slot lampiran: ChaCha20
+        hidden = public[len(lyrics):]
+        sym = hidden.replace(ZERO, "0").replace(ONE, "1")
+        _t(trace, "lyrics", _text_enc_steps(lyrics_text, vk, vig, blob) + [
+            _step("Bit diubah menjadi karakter tak terlihat", "table",
+                  {"cols": ["Bit", "Karakter yang ditempel", "Kode Unicode"],
+                   "rows": [[0, "zero-width space (tak terlihat)", "U+200B"], [1, "zero-width non-joiner (tak terlihat)", "U+200C"]]},
+                  algo="Zero-width",
+                  note=f"Tiap bit menjadi satu karakter yang lebarnya nol, ditempel di ujung lirik: {len(hidden):,} karakter."),
+            _step("Hasil: yang terlihat sekarang", "text",
+                  f"Lirik tampak : {lyrics[:80]}{'…' if len(lyrics) > 80 else ''}\n"
+                  f"Panjang      : {len(lyrics):,} karakter sebelum → {len(public):,} karakter sesudah ({len(hidden):,} tak terlihat)\n"
+                  f"Jika karakter tak terlihat dibuat tampak (0/1): {sym[:64]}…",
+                  note="Di layar, lirik sebelum dan sesudah tampak identik. Pesan aslinya tidak ada; yang tersimpan hanya bit ciphertext.")],
+            flow=["Teks asli", "Vigenère", "AES-256-GCM", "Deretan bit", "Karakter tak terlihat", "Lirik tampak biasa"])
+
+    if attach:      # slot dokumen pendukung: ChaCha20
         name, data = attach
         nb = name.encode("utf-8")
         attach_blob = encrypt_bytes(len(nb).to_bytes(2, "big") + nb + data, keys.slot_key(root("attach"), "attach-enc"))
-        _t(trace, "attach", "Lampiran (enkripsi file)", [
-            ("1. File asli", f"{name} ({len(data):,} byte)"),
-            ("2. ChaCha20-Poly1305 = ciphertext akhir, awalnya dalam hex", _hex(attach_blob)),
-            ("3. Disimpan sebagai", "attach.enc (isinya acak jika dibuka di Notepad)")])
+        _t(trace, "attach", [
+            _step("Dokumen asli (file)", "text", f"{name}  ({len(data):,} byte)\n16 byte pertama (hex): {data[:16].hex()}",
+                  note="Nama file dan isinya digabung, lalu diperlakukan sebagai deretan byte."),
+            _step("Enkripsi file: ChaCha20-Poly1305", "parts", _parts(attach_blob), algo="ChaCha20-Poly1305"),
+            _step("Disimpan sebagai attach.enc", "text",
+                  "Dokumen tidak disisipkan ke gambar atau audio. Ia disimpan sebagai file terenkripsi di dalam paket lagu.\n"
+                  "Jika dibuka dengan Notepad, isinya hanya karakter acak.")],
+            flow=["Dokumen", "ChaCha20-Poly1305", "attach.enc (acak)"])
 
     meta = {"id": rid, "title": title, "artist": artist, "salt": salt.hex()}
     files = {"audio.wav": audio, "cover.png": cover_png, "lyrics.txt": public.encode("utf-8")}
@@ -268,64 +391,83 @@ def open_release(rid: str, password=None, slot_keys=None) -> dict:
     tr = []
     out = {"meta": meta, "pub": pub, "cover": None, "audio": None, "lyrics": None, "attach": None,
            "skipped": [], "trace": tr}
-    none = ("Hasil", "Tidak ada pesan, atau kunci salah (tag keaslian tidak cocok), jadi dianggap kosong.")
-    skip = ("Hasil", "Kunci bagian ini belum diisi, bagian dilewati.")
+    skip = _step("Hasil", "text", "Kunci bagian ini belum diisi, jadi bagian ini dilewati dan tetap terkunci.")
 
+    # --- cover ---
     if not pw("cover"):
-        out["skipped"].append("cover"); _t(tr, "cover", "Cover album", [skip])
+        out["skipped"].append("cover"); _t(tr, "cover", [skip])
     else:
+        probe = {}
         try:
             ek, vk = _text_keys(root("cover"), "cover")
-            ct = extract_image(pub["cover"], keys.slot_key(root("cover"), "cover-pos"))
+            ct = extract_image(pub["cover"], keys.slot_key(root("cover"), "cover-pos"), probe)
             vig, text = decrypt_text_steps(ct, ek, vk)
             out["cover"] = text
-            _t(tr, "cover", "Cover album", [
-                ("1. Ciphertext diambil dari bit terakhir piksel (hex)", _hex(ct)),
-                ("2. Dekripsi AES-256-GCM, hasilnya tahap Vigenere (hex)", _hex(vig)),
-                ("3. Balik Vigenere = teks asli", text)])
-        except FAIL:
-            _t(tr, "cover", "Cover album", [none])
+            _t(tr, "cover", [
+                _step("Mengambil bit dari bit paling kanan piksel", "table", _img_rows(probe["rows"], probe["width"], read=True), algo="LSB",
+                      note="Lokasi acak dihitung ulang dari kunci posisi. 32 bit pertama = panjang pesan, sisanya isi. "
+                           "Tabel menampilkan 10 bit pertama.")]
+                + _text_dec_steps(ct, vig, vk, text),
+                flow=["Hitung lokasi dari kunci", "Baca bit", "Ciphertext", "AES-256-GCM", "Vigenère", "Teks asli"])
+        except FAIL as e:
+            _t(tr, "cover", [_fail(e)])
 
+    # --- audio ---
     if not pw("audio"):
-        out["skipped"].append("audio"); _t(tr, "audio", "Audio", [skip])
+        out["skipped"].append("audio"); _t(tr, "audio", [skip])
     else:
+        probe = {}
         try:
-            blob = extract_audio(pub["audio"], keys.slot_key(root("audio"), "audio-pos"))
+            blob = extract_audio(pub["audio"], keys.slot_key(root("audio"), "audio-pos"), probe)
             out["audio"] = decrypt_bytes(blob, keys.slot_key(root("audio"), "audio-enc"))
-            _t(tr, "audio", "Audio", [
-                ("1. Ciphertext diambil dari bit terakhir sampel lagu (hex)", _hex(blob)),
-                ("2. Dekripsi ChaCha20-Poly1305 = pesan suara asli", f"file WAV {len(out['audio']):,} byte (bisa diputar)")])
-        except FAIL:
-            _t(tr, "audio", "Audio", [none])
+            _t(tr, "audio", [
+                _step("Mengambil bit dari bit paling kanan sampel lagu", "table", _smp_rows(probe["rows"], read=True), algo="LSB",
+                      note="Lokasi dihitung dari kunci posisi. Tabel menampilkan 10 bit pertama (bagian header panjang)."),
+                _step("Bit digabung menjadi ciphertext", "parts", _parts(blob), note=f"{len(blob):,} byte."),
+                _step("Dekripsi ChaCha20-Poly1305", "text",
+                      f"Tag cocok, jadi kunci benar dan data tidak diubah.\nPesan suara asli kembali: file WAV {len(out['audio']):,} byte (bisa diputar).",
+                      algo="ChaCha20-Poly1305")],
+                flow=["Hitung lokasi dari kunci", "Baca bit", "Ciphertext", "ChaCha20-Poly1305", "File suara"])
+        except FAIL as e:
+            _t(tr, "audio", [_fail(e)])
 
+    # --- lirik ---
     if not pw("lyrics"):
-        out["skipped"].append("lyrics"); _t(tr, "lyrics", "Lirik", [skip])
+        out["skipped"].append("lyrics"); _t(tr, "lyrics", [skip])
     else:
         try:
             ek, vk = _text_keys(root("lyrics"), "lyrics")
+            hidden = "".join(c for c in pub["lyrics"] if c in (ZERO, ONE))
             ct = extract_text(pub["lyrics"])
             vig, text = decrypt_text_steps(ct, ek, vk)
             out["lyrics"] = text
-            _t(tr, "lyrics", "Lirik", [
-                ("1. Ciphertext diambil dari karakter tak terlihat di lirik (hex)", _hex(ct)),
-                ("2. Dekripsi AES-256-GCM, hasilnya tahap Vigenere (hex)", _hex(vig)),
-                ("3. Balik Vigenere = teks asli", text)])
-        except FAIL:
-            _t(tr, "lyrics", "Lirik", [none])
+            sym = hidden.replace(ZERO, "0").replace(ONE, "1")
+            _t(tr, "lyrics", [
+                _step("Mengumpulkan karakter tak terlihat di lirik", "text",
+                      f"Ditemukan {len(hidden):,} karakter tak terlihat.\nJika dibuat tampak (0/1): {sym[:64]}…",
+                      algo="Zero-width", note="Karakter tak terlihat diubah kembali menjadi bit (U+200B = 0, U+200C = 1).")]
+                + _text_dec_steps(ct, vig, vk, text),
+                flow=["Kumpulkan karakter tak terlihat", "Ciphertext", "AES-256-GCM", "Vigenère", "Teks asli"])
+        except FAIL as e:
+            _t(tr, "lyrics", [_fail(e)])
 
+    # --- dokumen pendukung ---
     if pub["attach"]:
         if not pw("attach"):
-            out["skipped"].append("attach"); _t(tr, "attach", "Lampiran", [skip])
+            out["skipped"].append("attach"); _t(tr, "attach", [skip])
         else:
             try:
                 raw = decrypt_bytes(pub["attach"], keys.slot_key(root("attach"), "attach-enc"))
                 n = int.from_bytes(raw[:2], "big")
                 out["attach"] = (raw[2:2 + n].decode("utf-8"), raw[2 + n:])
-                _t(tr, "attach", "Lampiran", [
-                    ("1. Isi attach.enc (ciphertext, hex)", _hex(pub["attach"])),
-                    ("2. Dekripsi ChaCha20-Poly1305 = file asli", f"{out['attach'][0]} ({len(out['attach'][1]):,} byte)")])
-            except FAIL:
-                _t(tr, "attach", "Lampiran", [none])
+                _t(tr, "attach", [
+                    _step("Isi attach.enc (ciphertext)", "parts", _parts(pub["attach"])),
+                    _step("Dekripsi ChaCha20-Poly1305", "text",
+                          f"Tag cocok. File asli kembali: {out['attach'][0]} ({len(out['attach'][1]):,} byte)",
+                          algo="ChaCha20-Poly1305")],
+                    flow=["attach.enc (acak)", "ChaCha20-Poly1305", "Dokumen asli"])
+            except FAIL as e:
+                _t(tr, "attach", [_fail(e)])
     return out
 
 

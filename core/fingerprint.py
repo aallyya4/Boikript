@@ -12,7 +12,7 @@ from webauthn.helpers.structs import (AuthenticatorAttachment, AuthenticatorSele
                                       PublicKeyCredentialDescriptor, ResidentKeyRequirement,
                                       UserVerificationRequirement)
 
-RP_NAME = "Sonic Player"
+RP_NAME = "BoiKript"
 
 
 def begin_register(rp_id: str, username: str) -> dict:
