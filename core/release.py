@@ -20,7 +20,8 @@ from .stego_image import embed_image, extract_image, to_png
 from .stego_text import ONE, ZERO, embed_text, extract_text
 
 STORAGE = os.environ.get("SONICVAULT_STORAGE", "storage")
-ALLOWED = {"audio.wav", "cover.png", "lyrics.txt", "attach.enc", "meta.json"}
+ALLOWED = {"audio.wav", "cover.png", "lyrics.txt", "attach.enc", "document.bin", "meta.json"}
+MAX_DOC = 20_000_000  # batas ukuran dokumen lagu (20 MB)
 RID_RE = re.compile(r"^[0-9a-f]{8}$")
 FAIL = (ValueError, InvalidTag, wave.Error, OSError)  # gagal ekstrak/dekripsi = slot kosong
 
@@ -125,6 +126,15 @@ def _text_dec_steps(ct: bytes, vig: bytes, vk: bytes, text: str) -> list:
     ]
 
 
+def _clean_doc(doc):
+    """Rapikan nama file dan batasi ukuran dokumen lagu (dokumen umum yang tampil untuk semua pengguna)."""
+    name, data = doc
+    name = re.sub(r"[^\w.\- ()]", "_", Path(name).name)[:100] or "dokumen"
+    if len(data) > MAX_DOC:
+        raise ValueError("Dokumen terlalu besar (maksimal 20 MB).")
+    return name, data
+
+
 def _text_keys(root: bytes, name: str):
     return keys.slot_key(root, f"{name}-aes"), keys.slot_key(root, f"{name}-vig", 16)
 
@@ -146,13 +156,14 @@ def _root_getter(pw, salt: bytes):
 
 def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
                    password=None, cover_text=None, voice=None, lyrics_text=None, attach=None,
-                   trace=None, slot_keys=None):
+                   trace=None, slot_keys=None, doc=None):
     """Buat lagu. Semua pesan rahasia opsional; tanpa satu pun, hasilnya lagu biasa.
 
     Tiap bagian punya kunci sendiri lewat slot_keys = {"cover": ..., "audio": ..., "lyrics": ..., "attach": ...}.
     Jika sebuah bagian tidak punya kunci sendiri, dipakai `password` (kunci bersama).
     db_key boleh None untuk lagu publik (upload dari pemutar biasa).
-    trace (list) diisi rincian tiap tahap enkripsi dan penyembunyian untuk ditampilkan."""
+    trace (list) diisi rincian tiap tahap enkripsi dan penyembunyian untuk ditampilkan.
+    doc = (nama, isi) dokumen lagu umum (chord/booklet/credits) yang tampil untuk semua pengguna; bukan pesan rahasia."""
     slot_keys = slot_keys or {}
 
     def pw(slot):
@@ -250,6 +261,8 @@ def create_release(db_key, owner, title, artist, carrier_wav, cover_img, lyrics,
     files = {"audio.wav": audio, "cover.png": cover_png, "lyrics.txt": public.encode("utf-8")}
     if attach_blob:
         files["attach.enc"] = attach_blob
+    if doc:
+        meta["doc_name"], files["document.bin"] = _clean_doc(doc)
     d = _dir(rid)
     d.mkdir(parents=True)
     for fname, blob in files.items():
@@ -366,6 +379,38 @@ def delete_song(rid: str, who: str):
     shutil.rmtree(_dir(rid))
     db.delete_track(rid)
     blockchain.add_block({"release": rid, "owner": who, "action": "delete", "files": {}})
+
+
+def read_doc(rid: str):
+    """Dokumen lagu umum: (nama, isi) atau None."""
+    f = _dir(rid) / "document.bin"
+    if not f.exists():
+        return None
+    return read_meta(rid).get("doc_name", "dokumen"), f.read_bytes()
+
+
+def set_doc(rid: str, who: str, name: str, data: bytes):
+    """Tambah atau ganti dokumen lagu. Hanya pemilik."""
+    if not can_manage(rid, who):
+        raise ValueError("Tidak diizinkan mengubah lagu ini.")
+    name, data = _clean_doc((name, data))
+    d = _dir(rid)
+    (d / "document.bin").write_bytes(data)
+    meta = read_meta(rid)
+    meta["doc_name"] = name
+    (d / "meta.json").write_text(json.dumps(meta))
+    blockchain.add_block({"release": rid, "owner": who, "action": "update", "files": {"document": keys.sha256_hex(data)}})
+
+
+def remove_doc(rid: str, who: str):
+    if not can_manage(rid, who):
+        raise ValueError("Tidak diizinkan mengubah lagu ini.")
+    d = _dir(rid)
+    (d / "document.bin").unlink(missing_ok=True)
+    meta = read_meta(rid)
+    meta.pop("doc_name", None)
+    (d / "meta.json").write_text(json.dumps(meta))
+    blockchain.add_block({"release": rid, "owner": who, "action": "update", "files": {}})
 
 
 def read_public(rid: str) -> dict:

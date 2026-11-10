@@ -30,7 +30,7 @@ blockchain.ensure_genesis()
 ss = st.session_state
 for _k, _v in {"crypto": False, "user": None, "opened": None, "last": None,
                "pub_n": 0, "pub_msg": None, "now": None,
-               "view": "home", "member": None, "confirm_del": None, "flash": None, "zip_rid": None, "fp_ok": None, "last_trace": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
+               "view": "home", "member": None, "confirm_del": None, "flash": None, "zip_rid": None, "fp_ok": None, "doc_ver": {}, "last_trace": None, "reg_fp": None, "fp_err": None, "wa_reg": None, "wa_auth": None}.items():
     ss.setdefault(_k, _v)
 
 
@@ -195,9 +195,20 @@ def manage_panel(rid: str, who: str, dbk=None):
     t = st.text_input("Judul", value=meta["title"], key=f"ed_t_{rid}")
     a = st.text_input("Artis", value=meta["artist"], key=f"ed_a_{rid}")
     lyr = st.text_area("Lirik", value=release.visible_lyrics(rid), height=180, key=f"ed_l_{rid}")
+    cur = release.read_doc(rid)
+    ver = ss.doc_ver.get(rid, 0)
+    st.caption("Dokumen lagu: " + (f"{cur[0]} ({len(cur[1]):,} byte)" if cur else "belum ada"))
+    newdoc = st.file_uploader("Tambah atau ganti dokumen lagu", key=f"ed_d_{rid}_{ver}")
+    if cur and st.button("Hapus dokumen lagu", key=f"rmdoc_{rid}"):
+        release.remove_doc(rid, who)
+        ss.flash = "Dokumen lagu dihapus."
+        st.rerun()
     if st.button("Simpan perubahan", key=f"ed_s_{rid}", type="primary"):
         try:
             release.update_song(rid, who, dbk, title=t, artist=a, lyrics=lyr)
+            if newdoc is not None:
+                release.set_doc(rid, who, newdoc.name, newdoc.getvalue())
+                ss.doc_ver[rid] = ver + 1
             ss.flash = "Perubahan disimpan."
             st.rerun()
         except ValueError as e:
@@ -279,6 +290,12 @@ def song_view(now: dict):
     if st.button("← Beranda", key="back_home"):
         go("home")  # lagu tetap terputar: bar pemutar tidak ikut diganti
     hero(now)
+    doc = release.read_doc(now["id"])
+    if doc:
+        st.markdown('<div class="sp-h2">📄 Dokumen lagu</div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            st.caption(f"{doc[0]} · {len(doc[1]):,} byte")
+            show_attachment(doc[0], doc[1], key=f"dl_doc_{now['id']}")
     if ss.member and release.can_manage(now["id"], f"m:{ss.member}"):
         with st.expander("⚙️ Edit / hapus lagu"):
             manage_panel(now["id"], f"m:{ss.member}")
@@ -342,13 +359,15 @@ def add_song_ui():
         wav = st.file_uploader("File lagu (MP3/WAV/FLAC/OGG)", type=AUDIO_TYPES, key=f"pb_w{n}")
         cov = st.file_uploader("Cover album (PNG/JPG)", type=["png", "jpg", "jpeg"], key=f"pb_c{n}")
         lyr = st.text_area("Lirik", height=120, key=f"pb_l{n}")
+        doc = st.file_uploader("Dokumen lagu (opsional): chord, booklet, atau credits", key=f"pb_d{n}")
         if st.button("Tambahkan", key=f"pb_b{n}", type="primary"):
             if not (title.strip() and artist.strip() and wav and cov):
                 st.error("Judul, artis, file lagu, dan cover wajib diisi.")
                 return
             try:
                 release.create_release(None, f"m:{ss.member}", title.strip(), artist.strip(),
-                                       wav_from_upload(wav.getvalue()), cov.getvalue(), lyr)
+                                       wav_from_upload(wav.getvalue()), cov.getvalue(), lyr,
+                                       doc=(doc.name, doc.getvalue()) if doc is not None else None)
             except Exception as e:
                 st.error(f"Gagal menambahkan lagu: {e}")
                 return
@@ -507,14 +526,14 @@ def slot_head(icon: str, title: str, kind: str, algo: str, hide: str):
                 f'<span class="sp-chip2">{hide}</span>', unsafe_allow_html=True)
 
 
-def show_attachment(name: str, data: bytes):
-    """Tampilkan dokumen pendukung sesuai jenisnya, plus tombol unduh."""
+def show_attachment(name: str, data: bytes, key: str = "dl_att"):
+    """Tampilkan dokumen sesuai jenisnya, plus tombol unduh."""
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if ext in ("png", "jpg", "jpeg", "gif", "webp"):
         st.image(data, caption=name)
     elif ext in ("txt", "md", "csv", "json", "log"):
         st.code(data.decode("utf-8", "replace")[:3000], language=None, wrap_lines=True)
-    st.download_button(f"⬇️ Unduh {name}", data, file_name=name, key="dl_att")
+    st.download_button(f"⬇️ Unduh {name}", data, file_name=name, key=key)
 
 
 def make_ui(dbk):
@@ -527,6 +546,7 @@ def make_ui(dbk):
         wav = st.file_uploader("Lagu pembawa (MP3/WAV/FLAC/OGG, otomatis diubah ke WAV 16-bit)", type=AUDIO_TYPES, key="mk_wav")
         cov = st.file_uploader("Cover album (PNG/JPG)", type=["png", "jpg", "jpeg"], key="mk_cov")
         lyr = st.text_area("Lirik (publik)", height=140, key="mk_lyr")
+        doc = st.file_uploader("Dokumen lagu (opsional, tampil untuk semua pengguna): chord, booklet, atau credits", key="mk_doc")
         try:
             if wav:
                 st.caption(f"Kapasitas audio: ±{audio_capacity(wav_from_upload(wav.getvalue())):,} byte")
@@ -575,7 +595,8 @@ def make_ui(dbk):
                     cover_text=s_cover or None,
                     voice=wav_from_upload(voice.getvalue()) if voice is not None else None,
                     lyrics_text=s_lyr or None,
-                    attach=(att.name, att.getvalue()) if att is not None else None, trace=trace)
+                    attach=(att.name, att.getvalue()) if att is not None else None, trace=trace,
+                    doc=(doc.name, doc.getvalue()) if doc is not None else None)
                 ss.last_trace = trace
             except Exception as e:
                 ss.last = ss.last_trace = None

@@ -1,4 +1,4 @@
-# SonicVault (tampil sebagai "Sonic Player")
+# BoiKript
 
 Pemutar musik biasa yang menyimpan platform pesan rahasia. Orang yang membuka aplikasi hanya melihat pemutar musik; **mode kripto tersembunyi** dan baru terbuka lewat frasa rahasia + dongle. Pesan dipecah ke **cover (lokasi)**, **audio (kegiatan)**, **lirik (waktu)**, dan **lampiran** (opsional). Tiap bagian boleh kosong, dan penerima harus membuka semuanya untuk paham maksudnya.
 
@@ -75,7 +75,8 @@ Saat membuka, bagian yang kunci-nya belum diisi dan yang kuncinya salah tampil s
 | Syarat | Username + password | Username + password (terpisah dari akun pemutar) + sidik jari + dongle |
 | Hak | Upload lagu, edit/hapus lagu **miliknya sendiri** | Buat lagu berpesan, buka pesan, kelola lagu miliknya, arsip, registri |
 
-Tamu (tanpa akun) bisa mencari dan memutar lagu, tetapi tidak bisa menambah lagu. Mode kripto bisa dimasuki dari akun pemutar mana pun, atau tanpa akun, lewat frasa rahasia.
+**Login akun wajib di awal**, sebelum masuk aplikasi (daftar dengan username, password, dan ulangi password). Login hilang jika halaman browser dimuat ulang.
+Mode kripto bisa dimasuki dari akun pemutar mana pun lewat frasa rahasia; setelah itu ia meminta login sendiri (akun kripto, sidik jari, dongle).
 Daftar akun pemutar disimpan di tabel `members` (hash bcrypt), terpisah dari tabel `users` milik mode kripto, jadi nama yang sama di kedua sisi tidak saling terkait.
 
 ## Kelola lagu (CRUD) dan kepemilikan
@@ -98,8 +99,32 @@ Klik **▶ Putar** membuka halaman lagu (cover, judul, lirik besar) dan bar pemu
 
 ## Tampilan proses kripto
 
-Di mode kripto, setelah **Buat lagu** muncul panel **🔬 Proses enkripsi**: teks asli → hasil Vigenère (hex) → ciphertext AES-GCM/ChaCha20 (hex acak) → disisipkan ke gambar/audio/lirik.
-Setelah **Buka** muncul panel **🔬 Proses dekripsi** dengan urutan sebaliknya (dan "tidak ada pesan" untuk bagian yang kosong atau kunci yang salah). Gunakan ini saat demo untuk menunjukkan hasil enkripsi yang acak.
+Setelah **Buat lagu** muncul panel **🔬 Proses enkripsi, tahap demi tahap**, dan setelah **Buka** muncul **🔬 Proses dekripsi**. Tiap bagian (Kunci, Cover, Audio, Lirik, Dokumen) punya tab sendiri berisi alur dan langkah bernomor:
+- Teks asli → tabel byte (karakter, desimal, hex, biner).
+- Vigenère: tabel per byte (byte masuk + byte kunci mod 256). Nilai kunci disembunyikan, bisa ditampilkan dengan sakelar "untuk belajar".
+- AES-256-GCM / ChaCha20-Poly1305: nonce, isi terenkripsi, dan tag, dalam hex. Ini ciphertext acaknya.
+- Ciphertext menjadi deretan bit (header panjang + isi).
+- Penyembunyian: tabel lokasi acak, nilai sebelum dan sesudah, bit pesan. Untuk gambar: cover sebelum, sesudah, dan peta perubahan. Untuk audio: jumlah sampel yang berubah. Untuk lirik: karakter tak terlihat dibuat tampak sebagai 0/1.
+- Dekripsi menampilkan urutan terbalik: lokasi dihitung dari kunci, bit dibaca, tag dicek, Vigenère dibalik, teks asli kembali.
+
+## Dokumen lagu (umum)
+
+Selain dokumen pendukung rahasia, setiap lagu boleh punya **Dokumen lagu** yang terlihat oleh semua pengguna, misalnya chord buatan sendiri, booklet, atau credits (maks. 20 MB).
+- Diunggah lewat **➕ Tambah lagu** (opsional) atau di langkah Data lagu pada mode kripto.
+- Tampil di halaman lagu sebagai kartu **📄 Dokumen lagu** (gambar dan TXT dipratinjau, semua jenis bisa diunduh).
+- Pemilik bisa menambah, mengganti, atau menghapusnya lewat **⚙️ Edit / hapus lagu**. Setiap perubahan dicatat di blockchain.
+- Ini fitur umum yang bisa dimiliki lagu apa pun, jadi keberadaannya bukan penanda pesan rahasia. Dokumen rahasia tetap terpisah, terenkripsi, dan tidak pernah tampil di pemutar.
+
+## Bentuk pesan
+
+| Jenis | Bagian | Contoh isi | Enkripsi | Disembunyikan di |
+|---|---|---|---|---|
+| Pesan teks | Cover | Lokasi: "Belakang gedung A" | Vigenère + AES-256-GCM | Gambar cover (LSB) |
+| Pesan teks | Lirik | Waktu: "Jumat 19.30" | Vigenère + AES-256-GCM | Lirik (karakter tak terlihat) |
+| Pesan file | Audio | Rekaman suara: kegiatan | ChaCha20-Poly1305 | Bunyi lagu (LSB) |
+| Pesan file | Dokumen pendukung | Peta/denah (PNG/JPG), catatan (TXT), PDF | ChaCha20-Poly1305 | Disimpan terenkripsi (attach.enc) |
+
+Dokumen yang terbuka ditampilkan sesuai jenisnya (gambar sebagai gambar, TXT sebagai teks) dan bisa diunduh.
 
 ## Alur demo
 
