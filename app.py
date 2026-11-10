@@ -391,7 +391,10 @@ def crypto_mode():
         return
     dbk = keys.slot_key(dongle, "db")  # kunci database diturunkan dari dongle
     c1.markdown('<span class="sp-chip ok" style="margin-left:0">🔓 Dongle terdeteksi</span>', unsafe_allow_html=True)
-    secret_ui(dbk) if ss.user else login_ui(dbk)
+    if ss.user:
+        secret_ui(dbk)
+    else:
+        login_ui(dbk)
 
 
 # Komponen browser untuk WebAuthn (sidik jari Windows Hello / Touch ID)
@@ -697,7 +700,10 @@ def chain_ui():
     f = st.file_uploader("Cek file terhadap registri", key="ch_file")
     if f:
         hit = blockchain.verify_file(f.getvalue())
-        st.success(f"Terdaftar di blok #{hit['block']}.") if hit else st.error("Tidak terdaftar / sudah berubah.")
+        if hit:
+            st.success(f"Terdaftar di blok #{hit['block']}. File ini asli dan belum diubah.")
+        else:
+            st.error("Tidak terdaftar atau sudah berubah. File ini bukan salinan asli dari registri.")
 
 
 # ====================== Halaman utama ======================
