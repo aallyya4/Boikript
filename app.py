@@ -271,7 +271,7 @@ def home_view(all_tracks: dict):
     q = ss.search.strip().lower()
     tracks = [t for t in all_tracks.values() if q in f'{t["title"]} {t["artist"]}'.lower()]
     st.markdown(f'<div class="sp-h1">{greeting()}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sp-h2">Lagu kamu</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sp-h2">Lagu untuk kamu</div>', unsafe_allow_html=True)
     if not tracks:
         st.info("Lagu tidak ditemukan." if q else "Belum ada lagu. Tambahkan lewat menu di samping.")
     per_row = 5
